@@ -22,9 +22,23 @@ class FinanceApiException implements Exception {
 
   String get userMessage {
     if (statusCode == 401) {
-      return 'Sesi login berakhir. Silakan login ulang.';
+      final detail = message.trim();
+      if (detail.contains('Kredensial atau perangkat tidak valid')) {
+        return 'Login ditolak. Pastikan username/password Finance2 benar dan device key APK sudah sama persis dengan terminal Android yang aktif di Finance2 > POS > Outlet + Terminal.';
+      }
+      if (detail.isNotEmpty &&
+          detail != 'Token mobile atau sesi login tidak tersedia.') {
+        return detail;
+      }
+      return 'Sesi login berakhir atau kredensial perangkat belum valid. Periksa username, password, dan device key terminal.';
     }
     if (statusCode == 403) {
+      if (message.contains('Sesi kasir tidak sesuai dengan perangkat')) {
+        return 'Perangkat terhubung sebagai backup kasir. Pastikan akun dan outletnya sama dengan sesi Finance2 yang sedang aktif.';
+      }
+      if (path.contains('/printers')) {
+        return 'Akun ini belum diberi akses printer. Hubungi admin untuk mengaktifkannya.';
+      }
       return 'Akun tidak memiliki akses ke fitur POS ini.';
     }
     if (statusCode == 404) {
@@ -61,6 +75,9 @@ class FinanceApiClient {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'X-Pos-Terminal-Key': settings.terminalDeviceKey,
+      // Finance2 token authorization uses the explicit mobile device header.
+      // Keep the terminal alias for older deployments during the transition.
+      'X-Pos-Mobile-Device-Key': settings.terminalDeviceKey,
     };
     if (settings.mobileApiKey.trim().isNotEmpty) {
       headers['X-Pos-Mobile-Key'] = settings.mobileApiKey.trim();
@@ -93,10 +110,11 @@ class FinanceApiClient {
   }
 
   Future<Map<String, Object?>> bootstrap({String since = ''}) {
-    return getJson(
-      '/pos-mobile/bootstrap',
-      query: {'since': since, 'outlet_id': '${settings.outletId}'},
-    );
+    final query = <String, String>{'since': since};
+    if (settings.authToken.trim().isEmpty && settings.outletId > 0) {
+      query['outlet_id'] = '${settings.outletId}';
+    }
+    return getJson('/pos-mobile/bootstrap', query: query);
   }
 
   Future<Map<String, Object?>> catalog({
@@ -106,17 +124,17 @@ class FinanceApiClient {
     int categoryId = 0,
     int limit = 60,
   }) {
-    return getJson(
-      '/pos-mobile/catalog',
-      query: {
-        'q': query,
-        'mode': mode,
-        'division_id': '$divisionId',
-        'category_id': '$categoryId',
-        'outlet_id': '${settings.outletId}',
-        'limit': '$limit',
-      },
-    );
+    final requestQuery = <String, String>{
+      'q': query,
+      'mode': mode,
+      'division_id': '$divisionId',
+      'category_id': '$categoryId',
+      'limit': '$limit',
+    };
+    if (settings.authToken.trim().isEmpty && settings.outletId > 0) {
+      requestQuery['outlet_id'] = '${settings.outletId}';
+    }
+    return getJson('/pos-mobile/catalog', query: requestQuery);
   }
 
   Future<Map<String, Object?>> memberSearch(String query) {
@@ -131,19 +149,142 @@ class FinanceApiClient {
   }
 
   Future<Map<String, Object?>> printers({String query = ''}) {
+    final requestQuery = <String, String>{
+      'q': query,
+      'status': 'ACTIVE',
+      'limit': '100',
+    };
+    if (settings.authToken.trim().isEmpty && settings.outletId > 0) {
+      requestQuery['outlet_id'] = '${settings.outletId}';
+    }
+    return getJson('/pos-mobile/printers', query: requestQuery);
+  }
+
+  Future<Map<String, Object?>> printerTest(int printerId) {
+    // Finance builds the preview and print payload server-side and protects
+    // this action with POST so a browser refresh cannot create an attempt.
+    return postJson('/pos-mobile/printers/test/$printerId', const {});
+  }
+
+  Future<Map<String, Object?>> reservations({
+    String query = '',
+    String statusTab = 'ACTIVE',
+    int page = 1,
+  }) {
     return getJson(
-      '/pos-mobile/printers',
+      '/pos-mobile/reservations',
       query: {
         'q': query,
-        'outlet_id': '${settings.outletId}',
-        'status': 'ACTIVE',
-        'limit': '100',
+        'status_tab': statusTab,
+        'page': '$page',
+        'limit': '25',
       },
     );
   }
 
-  Future<Map<String, Object?>> printerTest(int printerId) {
-    return getJson('/pos-mobile/printers/test/$printerId');
+  Future<Map<String, Object?>> reservationProducts({
+    String query = '',
+    String statusTab = 'ACTIVE',
+    int page = 1,
+  }) {
+    return getJson(
+      '/pos-mobile/reservations/products',
+      query: {
+        'q': query,
+        'status_tab': statusTab,
+        'page': '$page',
+        'limit': '50',
+      },
+    );
+  }
+
+  Future<Map<String, Object?>> reservationDetail(int reservationId) {
+    return getJson('/pos-mobile/reservations/$reservationId');
+  }
+
+  Future<Map<String, Object?>> reservationVerify(int reservationId) {
+    return postJson('/pos-mobile/reservations/verify/$reservationId', const {});
+  }
+
+  Future<Map<String, Object?>> reservationReject(
+    int reservationId,
+    String reason,
+  ) {
+    return postJson('/pos-mobile/reservations/reject/$reservationId', {
+      'reason': reason,
+    });
+  }
+
+  Future<Map<String, Object?>> selfOrderInbox({
+    String query = '',
+    String statusTab = 'ALL',
+    int page = 1,
+  }) {
+    return getJson(
+      '/pos-mobile/incoming/self-order',
+      query: {
+        'q': query,
+        'status_tab': statusTab,
+        'page': '$page',
+        'limit': '25',
+      },
+    );
+  }
+
+  Future<Map<String, Object?>> selfOrderInboxDetail(int orderId) {
+    return getJson('/pos-mobile/incoming/self-order/$orderId');
+  }
+
+  Future<Map<String, Object?>> selfOrderInboxVerify(int orderId) {
+    return postJson(
+      '/pos-mobile/incoming/self-order/verify/$orderId',
+      const {},
+    );
+  }
+
+  Future<Map<String, Object?>> selfOrderInboxReject(
+    int orderId,
+    String reason,
+  ) {
+    return postJson('/pos-mobile/incoming/self-order/reject/$orderId', {
+      'reason': reason,
+    });
+  }
+
+  Future<Map<String, Object?>> onlineFoodInbox({
+    String query = '',
+    String statusTab = 'ALL',
+    int page = 1,
+  }) {
+    return getJson(
+      '/pos-mobile/incoming/online-food',
+      query: {
+        'q': query,
+        'status_tab': statusTab,
+        'page': '$page',
+        'limit': '25',
+      },
+    );
+  }
+
+  Future<Map<String, Object?>> onlineFoodInboxDetail(int orderId) {
+    return getJson('/pos-mobile/incoming/online-food/$orderId');
+  }
+
+  Future<Map<String, Object?>> onlineFoodInboxVerify(int orderId) {
+    return postJson(
+      '/pos-mobile/incoming/online-food/verify/$orderId',
+      const {},
+    );
+  }
+
+  Future<Map<String, Object?>> onlineFoodInboxReject(
+    int orderId,
+    String reason,
+  ) {
+    return postJson('/pos-mobile/incoming/online-food/reject/$orderId', {
+      'reason': reason,
+    });
   }
 
   Future<Map<String, Object?>> orders({
@@ -215,11 +356,24 @@ class FinanceApiClient {
   Future<Map<String, Object?>> voucherSearch({
     required int orderId,
     String query = '',
-  }) {
-    return getJson(
-      '/pos-mobile/orders/payment/voucher-search',
-      query: {'order_id': '$orderId', 'q': query},
-    );
+  }) async {
+    try {
+      return await getJson(
+        '/pos-mobile/orders/payment/voucher-search',
+        query: {'order_id': '$orderId', 'q': query},
+      );
+    } on FinanceApiException catch (error) {
+      // Finance may return HTTP 422 with preview rows when a typed voucher
+      // is invalid. Keep those rows visible so the cashier gets feedback.
+      if (error.statusCode == 422 && error.data['rows'] is List) {
+        return {
+          'ok': false,
+          'rows': error.data['rows'],
+          'message': error.message,
+        };
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, Object?>> paymentSave(Map<String, Object?> payload) {
@@ -231,14 +385,14 @@ class FinanceApiClient {
   }
 
   Future<Map<String, Object?>> sessionStatus() {
-    return getJson(
-      '/pos-mobile/cashier/session-status',
-      query: {
-        'terminal_device_key': settings.terminalDeviceKey,
-        'outlet_id': '${settings.outletId}',
-        'terminal_id': '${settings.terminalId}',
-      },
-    );
+    final query = <String, String>{
+      'terminal_device_key': settings.terminalDeviceKey,
+    };
+    if (settings.authToken.trim().isEmpty) {
+      query['outlet_id'] = '${settings.outletId}';
+      query['terminal_id'] = '${settings.terminalId}';
+    }
+    return getJson('/pos-mobile/cashier/session-status', query: query);
   }
 
   Future<Map<String, Object?>> cashierOpen({

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -85,8 +86,20 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
 
     final localRows = await _localWorkspaceRows();
     final methods = await _loadRefundMethods();
-    final active = _mergeRows(_rows(activeResponse), localRows, paid: false);
-    final paid = _mergeRows(_rows(paidResponse), localRows, paid: true);
+    final activeServerRows =
+        _rows(activeResponse).where((row) => !_isPaidRow(row)).toList();
+    final paidServerRows = _rows(paidResponse).where(_isPaidRow).toList();
+    final paidServerIds = {
+      for (final row in paidServerRows)
+        if (_asInt(row['id']) > 0) _asInt(row['id']),
+    };
+    final active = _mergeRows(
+      activeServerRows,
+      localRows,
+      paid: false,
+      excludeServerIds: paidServerIds,
+    );
+    final paid = _mergeRows(paidServerRows, localRows, paid: true);
     if (!mounted) return;
     setState(() {
       _active = active;
@@ -177,10 +190,35 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
     }
   }
 
+  bool _isPaidRow(Map<String, Object?> row) {
+    final status = row['status']?.toString().toUpperCase().trim() ?? '';
+    final paymentStatus =
+        row['payment_status']?.toString().toUpperCase().trim() ?? '';
+    if ([
+      'PAID',
+      'SETTLED',
+      'FULLY_PAID',
+      'REFUND_PARTIAL',
+      'REFUND_FULL',
+      'REFUNDED_FULL',
+    ].contains(paymentStatus)) {
+      return true;
+    }
+    return [
+      'PAID',
+      'READY',
+      'SERVED',
+      'REFUND_PARTIAL',
+      'REFUND_FULL',
+      'REFUNDED_FULL',
+    ].contains(status);
+  }
+
   List<Map<String, Object?>> _mergeRows(
     List<Map<String, Object?>> serverRows,
     List<Map<String, Object?>> localRows, {
     required bool paid,
+    Set<int> excludeServerIds = const {},
   }) {
     final serverIds = {
       for (final row in serverRows)
@@ -200,6 +238,7 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
       ].contains(status);
       if (isPaid != paid) continue;
       final serverId = _asInt(row['id']);
+      if (serverId > 0 && excludeServerIds.contains(serverId)) continue;
       if (serverId > 0 && serverIds.contains(serverId)) continue;
       merged.add(row);
     }
@@ -248,16 +287,257 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
       );
       return;
     }
+    final options = await _reprintOptions();
+    if (options == null) return;
     try {
-      final response = await _api.orderReprintTargets(orderId);
+      final response = await _api.orderReprintTargets(
+        orderId,
+        lineScope: options['line_scope']?.toString() ?? 'LATEST',
+        printerId: _asInt(options['printer_id']),
+      );
       final targets = (response['direct_print_targets'] as List?) ?? const [];
       final result = await _printDispatcher.printTargets(
         targets.whereType<Map>(),
       );
-      _showMessage('Cetak ulang: ${result.message}');
+      await _showPrintOutcome(result, title: 'Cetak ulang order');
     } catch (error) {
-      _showMessage('Cetak ulang gagal: ${_workspaceError(error)}');
+      await _showPrintFailure(
+        title: 'Cetak ulang belum berhasil',
+        message: _workspaceError(error),
+      );
     }
+  }
+
+  Future<Map<String, Object?>?> _reprintOptions() async {
+    List<Map<String, Object?>> printers = const [];
+    List<Map<String, Object?>> localPrinters = const [];
+    try {
+      final bootstrap = await _api.bootstrap();
+      final cashierBootstrap = bootstrap['cashier_bootstrap'];
+      final rawOptions =
+          cashierBootstrap is Map
+              ? cashierBootstrap['order_reprint_printers']
+              : null;
+      printers =
+          rawOptions is List
+              ? rawOptions
+                  .whereType<Map>()
+                  .map((row) => Map<String, Object?>.from(row))
+                  .toList()
+              : const [];
+      // Keep compatibility with a Finance2 deployment before the printer
+      // options were added to cashier bootstrap.
+      if (printers.isEmpty) {
+        final response = await _api.printers();
+        printers =
+            (response['rows'] as List?)
+                ?.whereType<Map>()
+                .map((row) => Map<String, Object?>.from(row))
+                .toList() ??
+            const [];
+      }
+      localPrinters = await _db.localPrinters();
+    } catch (error) {
+      if (mounted) {
+        await _showPrintFailure(
+          title: 'Daftar printer belum tersedia',
+          message: _workspaceError(error),
+        );
+      }
+      return null;
+    }
+    if (!mounted) return null;
+    var selectedPrinterId = 0;
+    for (final printer in printers) {
+      if (printer['print_mode']?.toString().toUpperCase() == 'PRE_BILL') {
+        selectedPrinterId = _asInt(printer['id']);
+        break;
+      }
+    }
+    var lineScope = 'LATEST';
+    return showDialog<Map<String, Object?>>(
+      context: context,
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder:
+                (dialogContext, setDialogState) => AlertDialog(
+                  icon: const Icon(Icons.print_outlined),
+                  title: const Text('Atur cetak ulang'),
+                  content: SizedBox(
+                    width: 540,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Pilih sumber item dan printer tujuan. Layout tetap mengikuti pengaturan Finance.',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Item yang dicetak',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          RadioListTile<String>(
+                            contentPadding: EdgeInsets.zero,
+                            value: 'LATEST',
+                            groupValue: lineScope,
+                            title: const Text('Order baru saja'),
+                            subtitle: const Text(
+                              'Hanya item pada snapshot penambahan/konfirmasi terakhir.',
+                            ),
+                            onChanged:
+                                (value) => setDialogState(
+                                  () => lineScope = value ?? 'LATEST',
+                                ),
+                          ),
+                          RadioListTile<String>(
+                            contentPadding: EdgeInsets.zero,
+                            value: 'ALL',
+                            groupValue: lineScope,
+                            title: const Text('Semua item'),
+                            subtitle: const Text(
+                              'Cetak ulang seluruh item order.',
+                            ),
+                            onChanged:
+                                (value) => setDialogState(
+                                  () => lineScope = value ?? 'ALL',
+                                ),
+                          ),
+                          const Divider(height: 18),
+                          const Text(
+                            'Printer tujuan',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          RadioListTile<int>(
+                            contentPadding: EdgeInsets.zero,
+                            value: 0,
+                            groupValue: selectedPrinterId,
+                            title: const Text(
+                              'Semua printer sesuai aturan Finance',
+                            ),
+                            onChanged:
+                                (value) => setDialogState(
+                                  () => selectedPrinterId = value ?? 0,
+                                ),
+                          ),
+                          if (printers.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'Belum ada printer aktif dari Finance.',
+                              ),
+                            ),
+                          for (final printer in printers)
+                            RadioListTile<int>(
+                              contentPadding: EdgeInsets.zero,
+                              value: _asInt(printer['id']),
+                              groupValue: selectedPrinterId,
+                              title: Text(
+                                printer['label']?.toString() ??
+                                    printer['device_name']?.toString() ??
+                                    printer['printer_name']?.toString() ??
+                                    printer['device_code']?.toString() ??
+                                    'Printer',
+                              ),
+                              subtitle: Text(
+                                '${printer['print_mode']?.toString() == 'PRE_BILL' ? 'BILL' : printer['printer_role'] ?? 'CUSTOM'} | ${localPrinters.any((local) => _asInt(local['server_printer_id']) == _asInt(printer['id'])) ? 'Bluetooth terhubung' : 'Bluetooth belum dihubungkan'}',
+                              ),
+                              onChanged:
+                                  (value) => setDialogState(
+                                    () => selectedPrinterId = value ?? 0,
+                                  ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Batal'),
+                    ),
+                    FilledButton.icon(
+                      onPressed:
+                          () => Navigator.pop(dialogContext, {
+                            'printer_id': selectedPrinterId,
+                            'line_scope': lineScope,
+                          }),
+                      icon: const Icon(Icons.print),
+                      label: const Text('Cetak'),
+                    ),
+                  ],
+                ),
+          ),
+    );
+  }
+
+  Future<void> _showPrintOutcome(
+    PrintDispatchResult result, {
+    required String title,
+  }) async {
+    if (!mounted) return;
+    final problem = result.hasProblem || result.printed == 0;
+    await showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: Icon(
+              problem
+                  ? Icons.warning_amber_rounded
+                  : Icons.check_circle_outline,
+              color: problem ? Colors.orange.shade800 : Colors.green.shade700,
+              size: 34,
+            ),
+            title: Text(problem ? '$title perlu perhatian' : '$title berhasil'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(result.message),
+                if (result.missing.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Tindakan: buka Pengaturan > Printer lalu hubungkan printer Bluetooth yang sesuai.',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Mengerti'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  Future<void> _showPrintFailure({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: Icon(
+              Icons.print_disabled_outlined,
+              color: Colors.orange.shade800,
+              size: 34,
+            ),
+            title: Text(title),
+            content: Text('$message\n\nData transaksi tetap tersimpan.'),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Mengerti'),
+              ),
+            ],
+          ),
+    );
   }
 
   Future<void> _openDetail(Map<String, Object?> row) async {
@@ -659,9 +939,7 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
         final printResult = await _printDispatcher.printTargets(
           targets.whereType<Map>(),
         );
-        if (printResult.hasProblem) {
-          _showMessage('Cetak pembayaran: ${printResult.message}');
-        }
+        await _showPrintOutcome(printResult, title: 'Cetak pembayaran');
       }
       final change = _asDouble(result['change_total']);
       _showMessage(
@@ -1004,11 +1282,10 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
     final printResult = await _printDispatcher.printTargets(
       targets.whereType<Map>(),
     );
-    if (printResult.hasProblem) {
-      _showMessage(
-        '${isRefund ? 'Cetak refund' : 'Cetak void'}: ${printResult.message}',
-      );
-    }
+    await _showPrintOutcome(
+      printResult,
+      title: isRefund ? 'Cetak refund' : 'Cetak void',
+    );
   }
 
   Future<String?> _reasonDialog(String title) async {
@@ -1142,23 +1419,27 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
           ],
         ),
       ),
-      body:
-          _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-              ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(_error!, textAlign: TextAlign.center),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child:
+            _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(_error!, textAlign: TextAlign.center),
+                  ),
+                )
+                : TabBarView(
+                  controller: _tabs,
+                  children: [
+                    _workspaceTab(_active, paid: false),
+                    _workspaceTab(_paid, paid: true),
+                  ],
                 ),
-              )
-              : TabBarView(
-                controller: _tabs,
-                children: [
-                  _workspaceTab(_active, paid: false),
-                  _workspaceTab(_paid, paid: true),
-                ],
-              ),
+      ),
     );
   }
 
@@ -1392,10 +1673,13 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
   final String _clientEventId = 'PAY-${DateTime.now().microsecondsSinceEpoch}';
   final _voucher = TextEditingController();
   final _notes = TextEditingController();
+  Timer? _voucherSearchTimer;
+  int _voucherSearchRequest = 0;
   List<PaymentMethod> _methods = const [];
   List<Map<String, Object?>> _vouchers = const [];
   Map<String, Object?>? _selectedVoucher;
   final List<_WorkspacePaymentEntry> _entries = [];
+  int _selectedEntryIndex = 0;
   bool _busy = false;
 
   @override
@@ -1424,6 +1708,7 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
 
   @override
   void dispose() {
+    _voucherSearchTimer?.cancel();
     for (final entry in _entries) {
       entry.dispose();
     }
@@ -1432,13 +1717,36 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
     super.dispose();
   }
 
-  Future<void> _searchVoucher() async {
+  void _scheduleVoucherSearch() {
+    _voucherSearchTimer?.cancel();
+    final query = _voucher.text.trim();
+    final request = ++_voucherSearchRequest;
+    if (query.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _vouchers = const [];
+          _selectedVoucher = null;
+        });
+      }
+      return;
+    }
+    _voucherSearchTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted || request != _voucherSearchRequest) return;
+      _searchVoucher(showError: false);
+    });
+  }
+
+  Future<void> _searchVoucher({bool showError = true}) async {
+    final query = _voucher.text.trim();
+    if (query.isEmpty) return;
     setState(() => _busy = true);
     try {
-      final rows = await widget.onVoucherSearch(_voucher.text.trim());
-      if (mounted) setState(() => _vouchers = rows);
+      final rows = await widget.onVoucherSearch(query);
+      if (mounted && _voucher.text.trim() == query) {
+        setState(() => _vouchers = rows);
+      }
     } catch (error) {
-      _message('$error');
+      if (showError) _message('$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1495,6 +1803,90 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
     return _methods.first.id;
   }
 
+  void _setPaymentAmount(_WorkspacePaymentEntry entry, double amount) {
+    final text = amount.round().toString();
+    entry.amountController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() {});
+  }
+
+  double _remainingForSelectedEntry(double due) {
+    final selected =
+        _selectedEntryIndex >= 0 && _selectedEntryIndex < _entries.length
+            ? _selectedEntryIndex
+            : 0;
+    var enteredBefore = 0.0;
+    for (var index = 0; index < selected; index++) {
+      enteredBefore += _asDouble(_entries[index].amountController.text);
+    }
+    return max(0, due - enteredBefore);
+  }
+
+  Widget _quickPaymentButtons(double due) {
+    final index =
+        _selectedEntryIndex >= 0 && _selectedEntryIndex < _entries.length
+            ? _selectedEntryIndex
+            : 0;
+    final entry = _entries[index];
+    var method = 'metode terpilih';
+    for (final item in _methods) {
+      if (item.id == entry.methodId) {
+        method = item.name;
+        break;
+      }
+    }
+    final options = <Map<String, Object>>[
+      {'label': 'Pas', 'value': _remainingForSelectedEntry(due)},
+      {'label': '10K', 'value': 10000},
+      {'label': '20K', 'value': 20000},
+      {'label': '50K', 'value': 50000},
+      {'label': '100K', 'value': 100000},
+    ];
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 4, bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8F4),
+        border: Border.all(color: const Color(0xFFE5D5CB)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Nominal cepat untuk $method',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 7),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final option in options)
+                OutlinedButton(
+                  onPressed:
+                      _busy
+                          ? null
+                          : () => _setPaymentAmount(
+                            entry,
+                            (option['value'] as num).toDouble(),
+                          ),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: Text(option['label'] as String),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   void _message(String message) {
     ScaffoldMessenger.of(
       context,
@@ -1514,7 +1906,12 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
               )
               .toList(),
       onChanged:
-          _busy ? null : (value) => setState(() => entry.methodId = value ?? 0),
+          _busy
+              ? null
+              : (value) => setState(() {
+                _selectedEntryIndex = index;
+                entry.methodId = value ?? 0;
+              }),
       decoration: InputDecoration(
         labelText: _entries.length > 1 ? 'Metode ${index + 1}' : 'Metode',
         isDense: true,
@@ -1522,8 +1919,10 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
     );
     final amount = TextField(
       controller: entry.amountController,
+      onTap: () => setState(() => _selectedEntryIndex = index),
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       onChanged: (_) => setState(() {}),
+      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
       decoration: const InputDecoration(
         labelText: 'Nominal',
         prefixText: 'Rp ',
@@ -1532,6 +1931,7 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
     );
     final reference = TextField(
       controller: entry.referenceController,
+      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
       decoration: const InputDecoration(
         labelText: 'Referensi (opsional)',
         isDense: true,
@@ -1653,17 +2053,19 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
                           child: _paymentEntryFields(item.value, item.key),
                         ),
                       ),
+                      if (_entries.isNotEmpty) _quickPaymentButtons(due),
                       OutlinedButton.icon(
                         onPressed:
                             _busy || _methods.isEmpty
                                 ? null
-                                : () => setState(
-                                  () => _entries.add(
+                                : () => setState(() {
+                                  _entries.add(
                                     _WorkspacePaymentEntry(
                                       methodId: _nextMethodId(),
                                     ),
-                                  ),
-                                ),
+                                  );
+                                  _selectedEntryIndex = _entries.length - 1;
+                                }),
                         icon: const Icon(Icons.add),
                         label: const Text('Tambah metode pembayaran'),
                       ),
@@ -1675,6 +2077,18 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
                           Expanded(
                             child: TextField(
                               controller: _voucher,
+                              onChanged: (_) {
+                                setState(() {
+                                  _selectedVoucher = null;
+                                  _vouchers = const [];
+                                });
+                                _scheduleVoucherSearch();
+                              },
+                              onSubmitted: (_) => _searchVoucher(),
+                              onTapOutside:
+                                  (_) =>
+                                      FocusManager.instance.primaryFocus
+                                          ?.unfocus(),
                               decoration: const InputDecoration(
                                 labelText: 'Kode voucher',
                               ),
@@ -1706,8 +2120,24 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
                                   : const Icon(Icons.info_outline),
                           onTap:
                               voucher['ok'] == true
-                                  ? () =>
-                                      setState(() => _selectedVoucher = voucher)
+                                  ? () {
+                                    final code =
+                                        voucher['voucher_code']
+                                            ?.toString()
+                                            .trim() ??
+                                        '';
+                                    setState(() {
+                                      _selectedVoucher = voucher;
+                                      if (code.isNotEmpty) {
+                                        _voucher.value = TextEditingValue(
+                                          text: code,
+                                          selection: TextSelection.collapsed(
+                                            offset: code.length,
+                                          ),
+                                        );
+                                      }
+                                    });
+                                  }
                                   : null,
                         ),
                       ),
@@ -1718,6 +2148,9 @@ class _WorkspacePaymentDialogState extends State<_WorkspacePaymentDialog> {
                       const SizedBox(height: 10),
                       TextField(
                         controller: _notes,
+                        onTapOutside:
+                            (_) =>
+                                FocusManager.instance.primaryFocus?.unfocus(),
                         maxLines: 2,
                         minLines: 1,
                         keyboardType: TextInputType.multiline,

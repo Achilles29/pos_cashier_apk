@@ -16,13 +16,17 @@ class PrintDispatchResult {
 
   String get message {
     final parts = <String>[];
-    if (printed > 0) parts.add('$printed tujuan terkirim');
-    if (missing.isNotEmpty) {
-      parts.add('binding belum terhubung: ${missing.join(', ')}');
+    if (printed > 0) {
+      parts.add('$printed printer berhasil menerima cetakan');
     }
-    if (failed.isNotEmpty) parts.add('gagal: ${failed.join(', ')}');
+    if (missing.isNotEmpty) {
+      parts.add('printer belum terhubung: ${missing.join(', ')}');
+    }
+    if (failed.isNotEmpty) {
+      parts.add('printer tidak merespons: ${failed.join(', ')}');
+    }
     return parts.isEmpty
-        ? 'Tidak ada tujuan cetak aktif dari Finance.'
+        ? 'Finance belum mengirim tujuan cetak aktif.'
         : parts.join('; ');
   }
 }
@@ -63,6 +67,14 @@ class PosPrintDispatcher {
         await _printer.printText(
           address: address,
           text: text,
+          segments:
+              (target['print_segments'] is List)
+                  ? (target['print_segments'] as List)
+                      .whereType<Map>()
+                      .map((segment) => Map<String, Object?>.from(segment))
+                      .toList()
+                  : const [],
+          paperWidthMm: _boundedPaperWidth(target['paper_width_mm']),
           copies: _boundedInt(target['copies'], 1, 10),
           cutMode: target['cut_mode']?.toString() ?? 'PARTIAL',
           openDrawer: _asInt(target['open_drawer']) == 1,
@@ -90,5 +102,9 @@ class PosPrintDispatcher {
   int _boundedInt(Object? value, int fallback, int max) {
     final parsed = _asInt(value);
     return parsed <= 0 ? fallback : parsed.clamp(fallback, max);
+  }
+
+  int _boundedPaperWidth(Object? value) {
+    return _asInt(value) == 58 ? 58 : 80;
   }
 }

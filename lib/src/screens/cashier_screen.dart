@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -15,6 +16,7 @@ import '../services/sync_service.dart';
 import 'setup_screen.dart';
 import 'order_workspace_screen.dart';
 import 'printer_settings_screen.dart';
+import 'incoming_orders_screen.dart';
 
 class CashierScreen extends StatefulWidget {
   const CashierScreen({
@@ -476,6 +478,9 @@ class _CashierScreenState extends State<CashierScreen> {
                       children: [
                         TextField(
                           controller: noteController,
+                          onTapOutside:
+                              (_) =>
+                                  FocusManager.instance.primaryFocus?.unfocus(),
                           maxLines: 2,
                           decoration: const InputDecoration(
                             labelText: 'Catatan line',
@@ -646,6 +651,10 @@ class _CashierScreenState extends State<CashierScreen> {
             },
           ),
     );
+    // Let the dialog route finish releasing focus/semantics before disposing
+    // the controller. This avoids Flutter widget-tree errors after typing a
+    // product note and tapping "Simpan ke keranjang".
+    await Future<void>.delayed(Duration.zero);
     noteController.dispose();
     return result;
   }
@@ -948,6 +957,76 @@ class _CashierScreenState extends State<CashierScreen> {
     if (mounted) _runSync(silent: true);
   }
 
+  void _openPrinterSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => PrinterSettingsScreen(
+              settings: widget.settings,
+              settingsStore: widget.settingsStore,
+              onAuthExpired: _expireLogin,
+            ),
+      ),
+    );
+  }
+
+  Future<void> _openIncomingOrders() async {
+    final channel = await showModalBottomSheet<IncomingOrderChannel>(
+      context: context,
+      showDragHandle: true,
+      builder:
+          (sheetContext) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(
+                  title: Text('Order masuk'),
+                  subtitle: Text('Pilih kanal yang ingin diverifikasi'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.event_available_outlined),
+                  title: const Text('Reservasi'),
+                  onTap:
+                      () => Navigator.pop(
+                        sheetContext,
+                        IncomingOrderChannel.reservation,
+                      ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.qr_code_2_outlined),
+                  title: const Text('Self-order'),
+                  onTap:
+                      () => Navigator.pop(
+                        sheetContext,
+                        IncomingOrderChannel.selfOrder,
+                      ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delivery_dining_outlined),
+                  title: const Text('Order online'),
+                  onTap:
+                      () => Navigator.pop(
+                        sheetContext,
+                        IncomingOrderChannel.onlineFood,
+                      ),
+                ),
+              ],
+            ),
+          ),
+    );
+    if (channel == null || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => IncomingOrdersScreen(
+              settings: widget.settings,
+              channel: channel,
+            ),
+      ),
+    );
+    if (mounted) _runSync(silent: true);
+  }
+
   Future<void> _printOrderConfirmation(int orderId) async {
     try {
       final response = await _api.orderConfirmPrintTargets(orderId);
@@ -955,14 +1034,81 @@ class _CashierScreenState extends State<CashierScreen> {
       final result = await _printDispatcher.printTargets(
         targets.whereType<Map>(),
       );
-      if (result.hasProblem) {
-        _showMessage('KOT: ${result.message}');
-      }
+      await _showPrintOutcome(result, title: 'Cetak order');
     } catch (error) {
-      _showMessage(
-        'Order sudah tersimpan, tetapi cetak KOT belum berhasil: ${_friendlyError(error)}',
+      await _showPrintFailure(
+        title: 'Order tersimpan, cetak belum berhasil',
+        message: _friendlyError(error),
       );
     }
+  }
+
+  Future<void> _showPrintOutcome(
+    PrintDispatchResult result, {
+    required String title,
+  }) async {
+    if (!mounted) return;
+    final problem = result.hasProblem || result.printed == 0;
+    await showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: Icon(
+              problem
+                  ? Icons.warning_amber_rounded
+                  : Icons.check_circle_outline,
+              color: problem ? Colors.orange.shade800 : Colors.green.shade700,
+              size: 34,
+            ),
+            title: Text(problem ? '$title perlu perhatian' : '$title berhasil'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(result.message),
+                if (result.missing.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Tindakan: buka Pengaturan > Printer lalu hubungkan printer Bluetooth yang sesuai.',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Mengerti'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  Future<void> _showPrintFailure({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: Icon(
+              Icons.print_disabled_outlined,
+              color: Colors.orange.shade800,
+              size: 34,
+            ),
+            title: Text(title),
+            content: Text('$message\n\nData transaksi tetap tersimpan.'),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Mengerti'),
+              ),
+            ],
+          ),
+    );
   }
 
   Future<void> _refreshLocalDraftCount() async {
@@ -970,6 +1116,41 @@ class _CashierScreenState extends State<CashierScreen> {
     if (mounted && rows.length != _localDraftCount) {
       setState(() => _localDraftCount = rows.length);
     }
+  }
+
+  Future<void> _deleteFailedLocalOrder(Map<String, Object?> row) async {
+    final localUuid = row['local_uuid']?.toString().trim() ?? '';
+    if (localUuid.isEmpty || _asInt(row['id']) > 0) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: Icon(
+              Icons.delete_sweep_outlined,
+              color: Colors.red.shade700,
+              size: 34,
+            ),
+            title: const Text('Hapus order gagal?'),
+            content: const Text(
+              'Order lokal ini dan antrean sinkronnya akan dihapus dari perangkat. Data yang sudah tersimpan di server tidak ikut terhapus.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Batal'),
+              ),
+              FilledButton.tonal(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Hapus order'),
+              ),
+            ],
+          ),
+    );
+    if (confirmed != true) return;
+    await _db.deleteLocalOrder(localUuid);
+    await _refreshLocalDraftCount();
+    await _activeOrdersKey.currentState?._load();
+    if (mounted) _showMessage('Order gagal dihapus dari perangkat.');
   }
 
   Future<void> _openLocalDrafts() async {
@@ -1186,7 +1367,9 @@ class _CashierScreenState extends State<CashierScreen> {
 
   Future<void> _fetchRemoteCatalog(String query) async {
     if (!mounted) return;
-    if (query.isEmpty && _divisionId == 0) {
+    // Bundles must be loaded when the tab opens, even without a search term.
+    // A fresh install has no local bundle cache to fall back to.
+    if (_catalogMode != 'BUNDLE' && query.isEmpty && _divisionId == 0) {
       setState(() {
         _remoteProducts = const [];
         _remoteBundles = const [];
@@ -1201,7 +1384,13 @@ class _CashierScreenState extends State<CashierScreen> {
         divisionId: _divisionId,
         limit: 120,
       );
-      final rows = (response['rows'] as List?) ?? const [];
+      final rawRows = response['rows'];
+      final rows =
+          rawRows is List
+              ? rawRows
+              : rawRows is Map && rawRows['rows'] is List
+              ? rawRows['rows'] as List
+              : const [];
       if (_catalogMode == 'BUNDLE') {
         final bundles =
             rows
@@ -1643,21 +1832,36 @@ class _CashierScreenState extends State<CashierScreen> {
           terminalId: terminalId,
         );
         final rawSession = response['session'];
-        final openedSession =
+        final cachedSession =
             rawSession is Map
-                ? CashierSession.fromJson(Map<String, Object?>.from(rawSession))
+                ? (Map<String, Object?>.from(rawSession)
+                  ..['backup_mode'] = response['backup_mode'] == true
+                  ..['owner_terminal_id'] = _asInt(
+                    response['owner_terminal_id'],
+                  )
+                  ..['origin_terminal_id'] = _asInt(
+                    response['origin_terminal_id'],
+                  ))
                 : null;
+        final openedSession =
+            cachedSession == null
+                ? null
+                : CashierSession.fromJson(cachedSession);
         if (openedSession != null) {
           await _db.saveMasterCache('cashier_session', {
-            'session': Map<String, Object?>.from(rawSession as Map),
-            'active_sessions': [Map<String, Object?>.from(rawSession)],
+            'session': cachedSession,
+            'active_sessions': [cachedSession],
           });
           if (mounted) setState(() => _session = openedSession);
         }
         await widget.settingsStore.save(
           widget.settings.copyWith(outletId: outletId, terminalId: terminalId),
         );
-        _showMessage('Kasir berhasil dibuka.');
+        _showMessage(
+          response['attached_to_existing_session'] == true
+              ? 'APK terhubung sebagai backup ke shift Finance2 yang sedang aktif.'
+              : 'Kasir berhasil dibuka.',
+        );
         await _runSync();
       } catch (error) {
         if (error is FinanceApiException && error.isUnauthorized) {
@@ -1840,9 +2044,7 @@ class _CashierScreenState extends State<CashierScreen> {
       _showMessage(
         'Kasir berhasil ditutup. Variance: ${_moneyText(_asDouble(summary['variance_cash']))}',
       );
-      if (printTargets.isNotEmpty && printResult.hasProblem) {
-        _showMessage('Cetak tutup kasir: ${printResult.message}');
-      }
+      await _showPrintOutcome(printResult, title: 'Cetak tutup kasir');
       await _db.saveMasterCache('cashier_session', {
         'session': null,
         'active_sessions': const [],
@@ -1913,12 +2115,10 @@ class _CashierScreenState extends State<CashierScreen> {
       final printPayload = await _api.paymentPrintTargets(_asInt(result['id']));
       final targets =
           (printPayload['direct_print_targets'] as List?) ?? const [];
-      if (targets.isNotEmpty) {
-        final printResult = await _printDispatcher.printTargets(
-          targets.whereType<Map>(),
-        );
-        _showMessage('Cetak pembayaran: ${printResult.message}');
-      }
+      final printResult = await _printDispatcher.printTargets(
+        targets.whereType<Map>(),
+      );
+      await _showPrintOutcome(printResult, title: 'Cetak pembayaran');
       await _runSync(silent: true);
     } catch (error) {
       if (error is FinanceApiException && error.isUnauthorized) {
@@ -2095,49 +2295,8 @@ class _CashierScreenState extends State<CashierScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('POS Kasir'),
-        actions: [
-          IconButton(
-            tooltip: 'Pengaturan',
-            onPressed: _openSettings,
-            icon: const Icon(Icons.settings),
-          ),
-          IconButton(
-            tooltip: 'Printer POS',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder:
-                      (_) => PrinterSettingsScreen(
-                        settings: widget.settings,
-                        settingsStore: widget.settingsStore,
-                        onAuthExpired: _expireLogin,
-                      ),
-                ),
-              );
-            },
-            icon: const Icon(Icons.print_outlined),
-          ),
-          IconButton(
-            tooltip: 'Order aktif dan terbayar',
-            onPressed: () async {
-              await Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder:
-                      (_) => OrderWorkspaceScreen(settings: widget.settings),
-                ),
-              );
-              if (mounted) _runSync(silent: true);
-            },
-            icon: const Icon(Icons.receipt_long),
-          ),
-          IconButton(
-            tooltip: _session == null ? 'Buka kasir' : 'Tutup kasir',
-            onPressed: _busy ? null : _toggleShift,
-            icon: Icon(_session == null ? Icons.lock_open : Icons.lock_outline),
-          ),
-        ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(46),
+          preferredSize: const Size.fromHeight(48),
           child: _TopStatusBar(
             compact: true,
             sync: _sync,
@@ -2149,52 +2308,64 @@ class _CashierScreenState extends State<CashierScreen> {
             onSync: _runSync,
             localDraftCount: _localDraftCount,
             onOpenDrafts: _openLocalDrafts,
+            onOpenSettings: _openSettings,
+            onOpenPrinter: _openPrinterSettings,
+            onOpenWorkspace: _openOrderWorkspace,
+            onOpenIncoming: _openIncomingOrders,
+            onToggleShift: _busy ? null : _toggleShift,
+            shiftIcon: _session == null ? Icons.lock_open : Icons.lock_outline,
+            shiftTooltip: _session == null ? 'Buka kasir' : 'Tutup kasir',
           ),
         ),
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final wide = constraints.maxWidth >= 980;
-                  final activeOrders = _ActiveOrdersPanel(
-                    key: _activeOrdersKey,
-                    settings: widget.settings,
-                    onOpenWorkspace: _openOrderWorkspace,
-                    onAppendOrder: _startOrderAppend,
-                    onRetryBlocked: _runSync,
-                  );
-                  return Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    child:
-                        wide
-                            ? Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                SizedBox(width: 260, child: activeOrders),
-                                const SizedBox(width: 12),
-                                Expanded(child: _productGrid()),
-                                const SizedBox(width: 12),
-                                SizedBox(width: 330, child: _cartPanel()),
-                              ],
-                            )
-                            : ListView(
-                              padding: EdgeInsets.zero,
-                              children: [
-                                SizedBox(height: 360, child: activeOrders),
-                                const SizedBox(height: 12),
-                                SizedBox(height: 560, child: _productGrid()),
-                                const SizedBox(height: 12),
-                                SizedBox(height: 650, child: _cartPanel()),
-                              ],
-                            ),
-                  );
-                },
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 980;
+                    final activeOrders = _ActiveOrdersPanel(
+                      key: _activeOrdersKey,
+                      settings: widget.settings,
+                      onOpenWorkspace: _openOrderWorkspace,
+                      onAppendOrder: _startOrderAppend,
+                      onRetryBlocked: _runSync,
+                      onDeleteFailed: _deleteFailedLocalOrder,
+                    );
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      child:
+                          wide
+                              ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  SizedBox(width: 260, child: activeOrders),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: _productGrid()),
+                                  const SizedBox(width: 12),
+                                  SizedBox(width: 330, child: _cartPanel()),
+                                ],
+                              )
+                              : ListView(
+                                padding: EdgeInsets.zero,
+                                children: [
+                                  SizedBox(height: 360, child: activeOrders),
+                                  const SizedBox(height: 12),
+                                  SizedBox(height: 560, child: _productGrid()),
+                                  const SizedBox(height: 12),
+                                  SizedBox(height: 650, child: _cartPanel()),
+                                ],
+                              ),
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -2228,6 +2399,8 @@ class _CashierScreenState extends State<CashierScreen> {
             TextField(
               controller: _searchController,
               onChanged: _onSearchChanged,
+              onTapOutside:
+                  (_) => FocusManager.instance.primaryFocus?.unfocus(),
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon:
@@ -2542,6 +2715,8 @@ class _CashierScreenState extends State<CashierScreen> {
                 final customer = TextField(
                   controller: _customerController,
                   onChanged: _onCustomerChanged,
+                  onTapOutside:
+                      (_) => FocusManager.instance.primaryFocus?.unfocus(),
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.person_outline),
                     labelText: 'Customer',
@@ -2578,6 +2753,8 @@ class _CashierScreenState extends State<CashierScreen> {
                 final guest = TextField(
                   controller: _guestController,
                   keyboardType: TextInputType.number,
+                  onTapOutside:
+                      (_) => FocusManager.instance.primaryFocus?.unfocus(),
                   decoration: InputDecoration(
                     labelText: 'Guest',
                     isDense: true,
@@ -2588,6 +2765,8 @@ class _CashierScreenState extends State<CashierScreen> {
                 );
                 final table = TextField(
                   controller: _tableController,
+                  onTapOutside:
+                      (_) => FocusManager.instance.primaryFocus?.unfocus(),
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.table_restaurant),
                     labelText: 'Meja',
@@ -2744,6 +2923,8 @@ class _CashierScreenState extends State<CashierScreen> {
                 );
                 final notes = TextField(
                   controller: _noteController,
+                  onTapOutside:
+                      (_) => FocusManager.instance.primaryFocus?.unfocus(),
                   minLines: 1,
                   maxLines: 1,
                   decoration: InputDecoration(
@@ -3004,6 +3185,13 @@ class _TopStatusBar extends StatelessWidget {
     required this.onSync,
     required this.localDraftCount,
     required this.onOpenDrafts,
+    required this.onOpenSettings,
+    required this.onOpenPrinter,
+    required this.onOpenWorkspace,
+    required this.onOpenIncoming,
+    required this.onToggleShift,
+    required this.shiftIcon,
+    required this.shiftTooltip,
   });
 
   final bool compact;
@@ -3016,6 +3204,35 @@ class _TopStatusBar extends StatelessWidget {
   final VoidCallback onSync;
   final int localDraftCount;
   final VoidCallback onOpenDrafts;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onOpenPrinter;
+  final VoidCallback onOpenWorkspace;
+  final VoidCallback onOpenIncoming;
+  final VoidCallback? onToggleShift;
+  final IconData shiftIcon;
+  final String shiftTooltip;
+
+  Widget _actionButton({
+    required String tooltip,
+    required VoidCallback? onPressed,
+    required IconData icon,
+  }) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 19),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 38, height: 38),
+      visualDensity: VisualDensity.standard,
+      style: IconButton.styleFrom(
+        foregroundColor: const Color(0xFF574944),
+        backgroundColor: Colors.white,
+        disabledBackgroundColor: Colors.white.withValues(alpha: .55),
+        side: const BorderSide(color: Color(0xFFE5D5CB)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3035,6 +3252,36 @@ class _TopStatusBar extends StatelessWidget {
       ),
       child: Row(
         children: [
+          _actionButton(
+            tooltip: 'Pengaturan',
+            onPressed: onOpenSettings,
+            icon: Icons.settings_outlined,
+          ),
+          const SizedBox(width: 5),
+          _actionButton(
+            tooltip: 'Printer POS',
+            onPressed: onOpenPrinter,
+            icon: Icons.print_outlined,
+          ),
+          const SizedBox(width: 5),
+          _actionButton(
+            tooltip: 'Order aktif dan terbayar',
+            onPressed: onOpenWorkspace,
+            icon: Icons.receipt_long_outlined,
+          ),
+          const SizedBox(width: 5),
+          _actionButton(
+            tooltip: 'Order masuk',
+            onPressed: onOpenIncoming,
+            icon: Icons.inbox_outlined,
+          ),
+          const SizedBox(width: 5),
+          _actionButton(
+            tooltip: shiftTooltip,
+            onPressed: onToggleShift,
+            icon: shiftIcon,
+          ),
+          const SizedBox(width: 4),
           _StatusPill(
             icon: sync.online ? Icons.cloud_done : Icons.cloud_off,
             label: sync.online ? 'Online' : 'Offline',
@@ -3052,18 +3299,45 @@ class _TopStatusBar extends StatelessWidget {
                     )
                     : const Icon(Icons.sync, size: 18),
             label: Text(syncBusy ? 'Sinkron...' : 'Sinkron sekarang'),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF8C3F35),
+              minimumSize: const Size(0, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              side: const BorderSide(color: Color(0xFFE5D5CB)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
           ),
           const SizedBox(width: 6),
           TextButton.icon(
             onPressed: onOpenDrafts,
             icon: const Icon(Icons.drafts_outlined, size: 18),
             label: Text('Draft lokal $localDraftCount'),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF574944),
+              minimumSize: const Size(0, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              side: const BorderSide(color: Color(0xFFE5D5CB)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
           ),
           _StatusPill(
             icon: Icons.outbox_outlined,
             label: 'Outbox',
             value: '${sync.outboxPending}',
           ),
+          if (session?.backupMode == true) ...[
+            const SizedBox(width: 6),
+            const _StatusPill(
+              icon: Icons.devices_other_outlined,
+              label: 'Mode',
+              value: 'Backup',
+              color: Colors.orange,
+            ),
+          ],
           const SizedBox(width: 6),
           _StatusPill(
             icon: Icons.schedule,
@@ -3111,7 +3385,17 @@ class _TopStatusBar extends StatelessWidget {
       ),
     );
     return compact
-        ? SizedBox(height: 42, child: content)
+        ? Container(
+          height: 48,
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF8F4),
+            border: Border(
+              top: const BorderSide(color: Color(0xFFE5D5CB)),
+              bottom: const BorderSide(color: Color(0xFFE5D5CB)),
+            ),
+          ),
+          child: content,
+        )
         : Card(
           margin: const EdgeInsets.fromLTRB(12, 12, 12, 10),
           child: content,
@@ -3160,12 +3444,14 @@ class _ActiveOrdersPanel extends StatefulWidget {
     required this.onOpenWorkspace,
     required this.onAppendOrder,
     required this.onRetryBlocked,
+    required this.onDeleteFailed,
   });
 
   final AppSettings settings;
   final VoidCallback onOpenWorkspace;
   final Future<void> Function(Map<String, Object?>? row) onAppendOrder;
   final Future<void> Function() onRetryBlocked;
+  final Future<void> Function(Map<String, Object?> row) onDeleteFailed;
 
   @override
   State<_ActiveOrdersPanel> createState() => _ActiveOrdersPanelState();
@@ -3199,6 +3485,7 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
     }
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
     List<Map<String, Object?>> remote = const [];
+    final paidServerIds = <int>{};
     Object? error;
     try {
       final response = await _api.orders(
@@ -3211,8 +3498,22 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
           (response['rows'] as List?)
               ?.whereType<Map>()
               .map((row) => Map<String, Object?>.from(row))
+              .where((row) => !_isPaidRow(row))
               .toList() ??
           const [];
+      final paidResponse = await _api.orders(
+        status: 'PAID',
+        page: 1,
+        dateFrom: today,
+        dateTo: today,
+      );
+      for (final row in (paidResponse['rows'] as List? ?? const [])) {
+        if (row is Map) paidServerIds.add(_asInt(row['id']));
+      }
+      remote =
+          remote
+              .where((row) => !paidServerIds.contains(_asInt(row['id'])))
+              .toList();
     } catch (caught) {
       error = caught;
     }
@@ -3221,11 +3522,24 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
     for (final row in local) {
       final payload = _decodeLocalPayload(row['payload']?.toString());
       final serverId = _asInt(row['server_id']);
-      if (serverId > 0 && serverIds.contains(serverId)) continue;
+      if (serverId > 0 &&
+          (serverIds.contains(serverId) || paidServerIds.contains(serverId))) {
+        continue;
+      }
+      if (_isPaidRow({
+        'status': row['status'],
+        'payment_status': payload['payment_status'],
+        'paid_at': payload['paid_at'],
+        'paid_total': payload['paid_total'],
+        'grand_total': payload['grand_total'] ?? payload['subtotal'],
+      })) {
+        continue;
+      }
       final localUuid = row['local_uuid']?.toString() ?? '';
       final localLabel = localUuid.replaceFirst('ORD-', '');
       remote.add({
         'id': serverId,
+        'local_uuid': localUuid,
         'order_no':
             row['order_no'] ??
             (localLabel.isEmpty
@@ -3235,6 +3549,9 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
         'status': payload['confirm_order'] == true ? 'CONFIRMED' : 'DRAFT',
         'sync_status': row['sync_status'] ?? 'PENDING',
         'last_error': row['last_error'],
+        'stock_commit_status':
+            payload['stock_commit_status'] ??
+            (payload['confirm_order'] == true ? 'PENDING' : 'NOT_REQUIRED'),
         'grand_total': payload['grand_total'] ?? payload['subtotal'] ?? 0,
         'local_only': serverId <= 0,
       });
@@ -3255,6 +3572,36 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
     } catch (_) {
       return const {};
     }
+  }
+
+  bool _isPaidRow(Map<String, Object?> row) {
+    final status = row['status']?.toString().toUpperCase().trim() ?? '';
+    final paymentStatus =
+        row['payment_status']?.toString().toUpperCase().trim() ?? '';
+    if ([
+      'PAID',
+      'SETTLED',
+      'FULLY_PAID',
+      'REFUND_PARTIAL',
+      'REFUND_FULL',
+      'REFUNDED_FULL',
+    ].contains(paymentStatus)) {
+      return true;
+    }
+    if ([
+      'PAID',
+      'REFUND_PARTIAL',
+      'REFUND_FULL',
+      'REFUNDED_FULL',
+    ].contains(status)) {
+      return true;
+    }
+    final paidAt = row['paid_at']?.toString().trim() ?? '';
+    final paidTotal = _asDouble(row['paid_total']);
+    final grandTotal = _asDouble(row['grand_total']);
+    return paidAt.isNotEmpty &&
+        grandTotal > 0 &&
+        paidTotal + 0.009 >= grandTotal;
   }
 
   @override
@@ -3316,6 +3663,31 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
                           final orderNo =
                               row['order_no']?.toString() ?? 'Order';
                           final status = row['status']?.toString() ?? 'ACTIVE';
+                          final syncStatus =
+                              row['sync_status']?.toString().toUpperCase() ??
+                              '';
+                          final canDeleteFailed =
+                              _asInt(row['id']) <= 0 &&
+                              (syncStatus == 'BLOCKED' ||
+                                  syncStatus == 'FAILED' ||
+                                  (row['last_error']?.toString().trim() ?? '')
+                                      .isNotEmpty);
+                          final stockStatus =
+                              row['stock_commit_status']
+                                  ?.toString()
+                                  .toUpperCase() ??
+                              '';
+                          final stockLabel = switch (stockStatus) {
+                            'NOT_REQUIRED' => 'Stok: tidak diperlukan',
+                            'QUEUED' => 'Stok: dalam antrean',
+                            'PROCESSING' => 'Stok: sedang diproses',
+                            'POSTED' => 'Stok: sudah diposting',
+                            'FAILED' => 'Stok: gagal diproses',
+                            'PENDING' when status.toUpperCase() == 'DRAFT' =>
+                              'Stok: menunggu konfirmasi',
+                            'PENDING' => 'Stok: menunggu sinkron/proses server',
+                            _ => '',
+                          };
                           return Container(
                             padding: const EdgeInsets.all(9),
                             decoration: BoxDecoration(
@@ -3351,6 +3723,20 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
                                 Text(
                                   '${row['customer_display_name'] ?? 'Walk-in'} | $status',
                                 ),
+                                if (stockLabel.isNotEmpty)
+                                  Text(
+                                    stockLabel,
+                                    style: TextStyle(
+                                      color:
+                                          stockStatus == 'FAILED'
+                                              ? Colors.red.shade700
+                                              : stockStatus == 'POSTED'
+                                              ? Colors.green.shade700
+                                              : Colors.orange.shade800,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
                                 if (row['sync_status'] != null)
                                   Text(
                                     'Sync: ${row['sync_status']}',
@@ -3420,6 +3806,16 @@ class _ActiveOrdersPanelState extends State<_ActiveOrdersPanel> {
                                       onPressed: widget.onOpenWorkspace,
                                       icon: const Icon(Icons.more_horiz),
                                     ),
+                                    if (canDeleteFailed)
+                                      IconButton(
+                                        tooltip: 'Hapus order gagal',
+                                        onPressed:
+                                            () => widget.onDeleteFailed(row),
+                                        icon: Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.red.shade700,
+                                        ),
+                                      ),
                                   ],
                                 ),
                               ],
@@ -3528,6 +3924,14 @@ class _SidePanel extends StatelessWidget {
               value: '${sync.outboxPending}',
               icon: Icons.outbox,
             ),
+            if (session?.backupMode == true) ...[
+              const SizedBox(height: 8),
+              const _Metric(
+                label: 'Mode',
+                value: 'Backup',
+                icon: Icons.devices_other_outlined,
+              ),
+            ],
             const SizedBox(height: 8),
             _Metric(
               label: 'Sync terakhir',
@@ -3688,10 +4092,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   final String _clientEventId = 'PAY-${DateTime.now().microsecondsSinceEpoch}';
   final TextEditingController _voucherController = TextEditingController();
   final TextEditingController _notesController = TextEditingController();
+  Timer? _voucherSearchTimer;
+  int _voucherSearchRequest = 0;
   List<PaymentMethod> _methods = const [];
   List<Map<String, Object?>> _vouchers = const [];
   Map<String, Object?>? _selectedVoucher;
   final List<_PaymentEntry> _entries = [];
+  int _selectedEntryIndex = 0;
   bool _busy = false;
 
   @override
@@ -3720,6 +4127,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 
   @override
   void dispose() {
+    _voucherSearchTimer?.cancel();
     for (final entry in _entries) {
       entry.dispose();
     }
@@ -3728,13 +4136,36 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     super.dispose();
   }
 
-  Future<void> _searchVoucher() async {
+  void _scheduleVoucherSearch() {
+    _voucherSearchTimer?.cancel();
+    final query = _voucherController.text.trim();
+    final request = ++_voucherSearchRequest;
+    if (query.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _vouchers = const [];
+          _selectedVoucher = null;
+        });
+      }
+      return;
+    }
+    _voucherSearchTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted || request != _voucherSearchRequest) return;
+      _searchVoucher(showError: false);
+    });
+  }
+
+  Future<void> _searchVoucher({bool showError = true}) async {
+    final query = _voucherController.text.trim();
+    if (query.isEmpty) return;
     setState(() => _busy = true);
     try {
-      final rows = await widget.onVoucherSearch(_voucherController.text.trim());
-      if (mounted) setState(() => _vouchers = rows);
+      final rows = await widget.onVoucherSearch(query);
+      if (mounted && _voucherController.text.trim() == query) {
+        setState(() => _vouchers = rows);
+      }
     } catch (error) {
-      if (mounted) _showDialogMessage('$error');
+      if (mounted && showError) _showDialogMessage('$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -3807,6 +4238,84 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       }
     }
     return _methods.first.id;
+  }
+
+  void _setPaymentAmount(_PaymentEntry entry, double amount) {
+    final text = amount.round().toString();
+    entry.amountController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() {});
+  }
+
+  double _remainingForSelectedEntry(double due) {
+    final selected =
+        _selectedEntryIndex >= 0 && _selectedEntryIndex < _entries.length
+            ? _selectedEntryIndex
+            : 0;
+    var enteredBefore = 0.0;
+    for (var index = 0; index < selected; index++) {
+      enteredBefore += _asDouble(_entries[index].amountController.text);
+    }
+    return max(0, due - enteredBefore);
+  }
+
+  Widget _quickPaymentButtons(double due) {
+    final index =
+        _selectedEntryIndex >= 0 && _selectedEntryIndex < _entries.length
+            ? _selectedEntryIndex
+            : 0;
+    final entry = _entries[index];
+    final method = _methodFor(entry.methodId)?.name ?? 'metode terpilih';
+    final options = <Map<String, Object>>[
+      {'label': 'Pas', 'value': _remainingForSelectedEntry(due)},
+      {'label': '10K', 'value': 10000},
+      {'label': '20K', 'value': 20000},
+      {'label': '50K', 'value': 50000},
+      {'label': '100K', 'value': 100000},
+    ];
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8F4),
+        border: Border.all(color: const Color(0xFFE5D5CB)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Nominal cepat untuk $method',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 7),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final option in options)
+                OutlinedButton(
+                  onPressed:
+                      _busy
+                          ? null
+                          : () => _setPaymentAmount(
+                            entry,
+                            (option['value'] as num).toDouble(),
+                          ),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: Text(option['label'] as String),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   void _showDialogMessage(String message) {
@@ -3937,11 +4446,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                         onChanged:
                                             _busy
                                                 ? null
-                                                : (value) => setState(
-                                                  () =>
-                                                      entry.methodId =
-                                                          value ?? 0,
-                                                ),
+                                                : (value) => setState(() {
+                                                  _selectedEntryIndex = index;
+                                                  entry.methodId = value ?? 0;
+                                                }),
                                         decoration: InputDecoration(
                                           labelText:
                                               _entries.length > 1
@@ -3968,11 +4476,19 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                 const SizedBox(height: 8),
                                 TextField(
                                   controller: entry.amountController,
+                                  onTap:
+                                      () => setState(
+                                        () => _selectedEntryIndex = index,
+                                      ),
                                   keyboardType:
                                       const TextInputType.numberWithOptions(
                                         decimal: true,
                                       ),
                                   onChanged: (_) => setState(() {}),
+                                  onTapOutside:
+                                      (_) =>
+                                          FocusManager.instance.primaryFocus
+                                              ?.unfocus(),
                                   decoration: const InputDecoration(
                                     labelText: 'Nominal diterima',
                                     prefixText: 'Rp ',
@@ -3981,6 +4497,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                 const SizedBox(height: 8),
                                 TextField(
                                   controller: entry.referenceController,
+                                  onTapOutside:
+                                      (_) =>
+                                          FocusManager.instance.primaryFocus
+                                              ?.unfocus(),
                                   decoration: const InputDecoration(
                                     labelText:
                                         'Referensi pembayaran (opsional)',
@@ -3991,15 +4511,17 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                           ),
                         );
                       }),
+                      if (_entries.isNotEmpty) _quickPaymentButtons(due),
                       OutlinedButton.icon(
                         onPressed:
                             _busy || _methods.isEmpty
                                 ? null
-                                : () => setState(
-                                  () => _entries.add(
+                                : () => setState(() {
+                                  _entries.add(
                                     _PaymentEntry(methodId: _nextMethodId()),
-                                  ),
-                                ),
+                                  );
+                                  _selectedEntryIndex = _entries.length - 1;
+                                }),
                         icon: const Icon(Icons.add),
                         label: const Text('Tambah metode pembayaran'),
                       ),
@@ -4019,6 +4541,18 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                           Expanded(
                             child: TextField(
                               controller: _voucherController,
+                              onChanged: (_) {
+                                setState(() {
+                                  _selectedVoucher = null;
+                                  _vouchers = const [];
+                                });
+                                _scheduleVoucherSearch();
+                              },
+                              onSubmitted: (_) => _searchVoucher(),
+                              onTapOutside:
+                                  (_) =>
+                                      FocusManager.instance.primaryFocus
+                                          ?.unfocus(),
                               decoration: const InputDecoration(
                                 labelText: 'Kode voucher',
                               ),
@@ -4053,9 +4587,25 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                     : const Icon(Icons.info_outline),
                             onTap:
                                 voucher['ok'] == true
-                                    ? () => setState(
-                                      () => _selectedVoucher = voucher,
-                                    )
+                                    ? () {
+                                      final code =
+                                          voucher['voucher_code']
+                                              ?.toString()
+                                              .trim() ??
+                                          '';
+                                      setState(() {
+                                        _selectedVoucher = voucher;
+                                        if (code.isNotEmpty) {
+                                          _voucherController
+                                              .value = TextEditingValue(
+                                            text: code,
+                                            selection: TextSelection.collapsed(
+                                              offset: code.length,
+                                            ),
+                                          );
+                                        }
+                                      });
+                                    }
                                     : null,
                           ),
                         ),
@@ -4067,6 +4617,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                       const SizedBox(height: 10),
                       TextField(
                         controller: _notesController,
+                        onTapOutside:
+                            (_) =>
+                                FocusManager.instance.primaryFocus?.unfocus(),
                         maxLines: 2,
                         decoration: const InputDecoration(
                           labelText: 'Catatan payment',

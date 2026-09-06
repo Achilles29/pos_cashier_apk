@@ -12,11 +12,13 @@ class PrinterSettingsScreen extends StatefulWidget {
     required this.settings,
     this.settingsStore,
     this.onAuthExpired,
+    this.embedded = false,
   });
 
   final AppSettings settings;
   final SettingsStore? settingsStore;
   final VoidCallback? onAuthExpired;
+  final bool embedded;
 
   @override
   State<PrinterSettingsScreen> createState() => _PrinterSettingsScreenState();
@@ -29,7 +31,6 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   List<Map<String, Object?>> _serverPrinters = const [];
   List<Map<String, Object?>> _localPrinters = const [];
   Map<String, Object?> _serverGeneral = const {};
-  String _serverConfigSource = '';
   bool _loading = true;
   String? _error;
 
@@ -63,7 +64,6 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
         _localPrinters = locals;
         _serverGeneral =
             (response['general'] as Map?)?.cast<String, Object?>() ?? const {};
-        _serverConfigSource = response['config_source']?.toString() ?? '';
         _loading = false;
       });
     } catch (error) {
@@ -91,7 +91,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       setState(() {
         _loading = false;
         _serverPrinters = cachedRows;
-        _error = cachedRows.isEmpty ? '$error' : null;
+        _error = cachedRows.isEmpty ? _friendlyLoadError(error) : null;
       });
       if (cachedRows.isNotEmpty) {
         _localPrinters = await _db.localPrinters();
@@ -121,20 +121,28 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           ),
     );
     if (result == null) return;
-    await _db.saveLocalPrinter({
-      'server_printer_id': serverId,
-      'server_name': serverRow['device_name']?.toString() ?? 'Printer',
-      'printer_role': serverRow['printer_role']?.toString() ?? 'CUSTOM',
-      'print_scope': serverRow['print_scope']?.toString() ?? 'ALL',
-      'bluetooth_name': result['bluetooth_name']?.toString() ?? '',
-      'bluetooth_address': result['bluetooth_address']?.toString() ?? '',
-      // Paper/layout/copy/cut rules remain server-owned. This field is only
-      // retained for local schema compatibility and is never edited here.
-      'paper_width': _asInt(serverRow['paper_width_mm']) == 80 ? 80 : 58,
-      'is_active': 1,
-    });
-    _showMessage('Binding printer berhasil disimpan di database lokal APK.');
-    await _load();
+    try {
+      await _db.saveLocalPrinter({
+        'server_printer_id': serverId,
+        'server_name': serverRow['device_name']?.toString() ?? 'Printer',
+        'printer_role': serverRow['printer_role']?.toString() ?? 'CUSTOM',
+        'print_scope': serverRow['print_scope']?.toString() ?? 'ALL',
+        'bluetooth_name': result['bluetooth_name']?.toString() ?? '',
+        'bluetooth_address': result['bluetooth_address']?.toString() ?? '',
+        // Paper/layout/copy/cut rules remain server-owned. This field is only
+        // retained for local schema compatibility and is never edited here.
+        'paper_width': _asInt(serverRow['paper_width_mm']) == 80 ? 80 : 58,
+        'is_active': 1,
+      });
+      _showMessage(
+        'Printer berhasil dihubungkan. Pengaturan layout tetap mengikuti Finance.',
+      );
+      await _load();
+    } catch (error) {
+      _showMessage(
+        'Koneksi printer gagal disimpan: ${_friendlyPrinterError(error)}',
+      );
+    }
   }
 
   Future<void> _addPrinter() async {
@@ -142,7 +150,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       context: context,
       builder:
           (dialogContext) => AlertDialog(
-            title: const Text('Pilih printer server'),
+            title: const Text('Hubungkan printer'),
             content: SizedBox(
               width: 520,
               child: ListView.builder(
@@ -289,12 +297,14 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final content = _content();
+    if (widget.embedded) return content;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Printer POS'),
         actions: [
           IconButton(
-            tooltip: 'Muat ulang daftar server',
+            tooltip: 'Muat ulang daftar printer',
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.sync),
           ),
@@ -306,65 +316,71 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
               : FloatingActionButton.extended(
                 onPressed: _addPrinter,
                 icon: const Icon(Icons.add),
-                label: const Text('Tambah koneksi'),
+                label: const Text('Hubungkan printer'),
               ),
-      body:
-          _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-              ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(_error!, textAlign: TextAlign.center),
-                ),
-              )
-              : _serverPrinters.isEmpty
-              ? const Center(
-                child: Text('Belum ada printer aktif dari server finance.'),
-              )
-              : RefreshIndicator(
-                onRefresh: _load,
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
-                  children: [
-                    const Text(
-                      'Daftar printer server',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Daftar ini mengikuti database finance. Nama dan alamat Bluetooth di bawahnya disimpan lokal di APK.',
-                    ),
-                    if (_serverConfigSource.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Card(
-                        child: ListTile(
-                          leading: const Icon(Icons.cloud_done_outlined),
-                          title: Text(
-                            _serverGeneral['title']
-                                        ?.toString()
-                                        .trim()
-                                        .isNotEmpty ==
-                                    true
-                                ? _serverGeneral['title'].toString()
-                                : 'Pengaturan umum dari Finance',
-                            style: const TextStyle(fontWeight: FontWeight.w800),
-                          ),
-                          subtitle: Text(
-                            'Layout, footer, branding, divisi, copy, potong kertas, dan aturan event dibaca dari server.\n$_serverConfigSource',
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    ..._serverPrinters.map(_printerTile),
-                  ],
-                ),
-              ),
+      body: content,
     );
+  }
+
+  Widget _content() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(_error!, textAlign: TextAlign.center),
+        ),
+      );
+    }
+    if (_serverPrinters.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _load,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 120),
+            Center(child: Text('Belum ada printer yang dapat digunakan.')),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Printer',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Muat ulang daftar printer',
+                onPressed: _loading ? null : _load,
+                icon: const Icon(Icons.sync),
+              ),
+            ],
+          ),
+          if (_serverGeneral['title']?.toString().trim().isNotEmpty == true)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _serverGeneral['title'].toString(),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ..._serverPrinters.map(_printerTile),
+        ],
+      ),
+    );
+  }
+
+  String _friendlyLoadError(Object error) {
+    if (error is FinanceApiException) return error.userMessage;
+    return 'Daftar printer belum dapat dimuat. Periksa koneksi lalu coba lagi.';
   }
 
   Widget _printerTile(Map<String, Object?> serverRow) {
@@ -373,15 +389,6 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     final connected =
         local != null &&
         (local['bluetooth_address']?.toString().trim().isNotEmpty ?? false);
-    final routes = (serverRow['server_routes'] as List?) ?? const [];
-    final routeSummary = routes
-        .whereType<Map>()
-        .map(
-          (route) =>
-              '${route['event_code'] ?? '-'}: ${route['layout_name'] ?? '-'}',
-        )
-        .take(3)
-        .join('\n');
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
@@ -397,9 +404,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           style: const TextStyle(fontWeight: FontWeight.w800),
         ),
         subtitle: Text(
-          '${serverRow['printer_role'] ?? 'CUSTOM'} | ${serverRow['template_document_type'] ?? 'Aturan server'}\n${connected ? '${local['bluetooth_name']} | ${local['bluetooth_address']}' : 'Belum terhubung ke Bluetooth lokal'}${routeSummary.isEmpty ? '' : '\n$routeSummary'}',
+          '${serverRow['printer_role'] ?? 'CUSTOM'} | ${serverRow['template_document_type'] ?? 'Jenis cetak'}\n${connected ? '${local['bluetooth_name']} | ${local['bluetooth_address']}' : 'Belum terhubung ke Bluetooth'}',
         ),
-        isThreeLine: true,
+        isThreeLine: false,
         trailing: Wrap(
           spacing: 0,
           children: [

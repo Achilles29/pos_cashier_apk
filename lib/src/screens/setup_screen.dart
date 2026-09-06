@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/finance_api_client.dart';
 import '../services/settings_store.dart';
-import 'printer_settings_screen.dart';
 
 class SetupScreen extends StatefulWidget {
   const SetupScreen({
@@ -78,16 +77,23 @@ class _SetupScreenState extends State<SetupScreen> {
     final existing = await widget.settingsStore.profile(profileId);
     final sameProfile = profileId == widget.initialSettings.profileId;
     final source = existing ?? (sameProfile ? widget.initialSettings : null);
+    final terminalDeviceKey = _terminalKey.text.trim();
+    final bindingChanged =
+        sameProfile &&
+        (backendUrl.replaceFirst(RegExp(r'/+$'), '') !=
+                widget.initialSettings.normalizedBackendUrl ||
+            terminalDeviceKey !=
+                widget.initialSettings.terminalDeviceKey.trim());
     await widget.settingsStore.save(
       AppSettings(
         backendUrl: backendUrl,
-        terminalDeviceKey: _terminalKey.text.trim(),
+        terminalDeviceKey: terminalDeviceKey,
         profileId: profileId,
         serverScope: source?.serverScope ?? profileId,
         mobileApiKey: _mobileApiKey.text.trim(),
-        authToken: source?.authToken ?? '',
-        username: source?.username ?? '',
-        authExpiresAt: source?.authExpiresAt ?? '',
+        authToken: bindingChanged ? '' : (source?.authToken ?? ''),
+        username: bindingChanged ? '' : (source?.username ?? ''),
+        authExpiresAt: bindingChanged ? '' : (source?.authExpiresAt ?? ''),
         outletId: int.tryParse(_outletId.text.trim()) ?? 0,
         terminalId: int.tryParse(_terminalId.text.trim()) ?? 0,
         backgroundSyncEnabled: _backgroundSync,
@@ -154,93 +160,78 @@ class _SetupScreenState extends State<SetupScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final height =
-        (MediaQuery.sizeOf(context).height - 80).clamp(520.0, 760.0).toDouble();
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Pengaturan POS'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.link), text: 'Koneksi'),
-              Tab(icon: Icon(Icons.print), text: 'Printer'),
-              Tab(icon: Icon(Icons.settings), text: 'Perangkat'),
-            ],
-          ),
-        ),
-        body: SafeArea(
-          child: Center(
-            child: SizedBox(
-              width: 620,
-              height: height,
+    return Scaffold(
+      appBar: AppBar(title: const Text('Pengaturan POS')),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 620),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
               child: Card(
-                margin: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(20, 18, 20, 12),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Server finance adalah sumber master, shift, transaksi, HPP, dan stock commit.',
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Koneksi',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
-                    ),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: TabBarView(
-                        children: [
-                          _connectionTab(),
-                          _printerTab(),
-                          _deviceTab(),
-                        ],
+                      const SizedBox(height: 12),
+                      _connectionFields(),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Divider(height: 1),
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
-                      child: Column(
-                        children: [
-                          SizedBox(
-                            width: double.infinity,
-                            child: FilledButton.icon(
-                              onPressed: _saving || _loggingOut ? null : _save,
-                              icon:
-                                  _saving
-                                      ? const SizedBox.square(
-                                        dimension: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                      : const Icon(Icons.save),
-                              label: const Text('Simpan pengaturan'),
-                            ),
+                      Text(
+                        'Perangkat',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _deviceFields(),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _saving || _loggingOut ? null : _save,
+                          icon:
+                              _saving
+                                  ? const SizedBox.square(
+                                    dimension: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                  : const Icon(Icons.save),
+                          label: const Text('Simpan pengaturan'),
+                        ),
+                      ),
+                      if (widget.initialSettings.authToken.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: _saving || _loggingOut ? null : _logout,
+                            icon:
+                                _loggingOut
+                                    ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                    : const Icon(Icons.logout),
+                            label: const Text('Keluar dari akun'),
                           ),
-                          if (widget.initialSettings.authToken.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    _saving || _loggingOut ? null : _logout,
-                                icon:
-                                    _loggingOut
-                                        ? const SizedBox.square(
-                                          dimension: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                        : const Icon(Icons.logout),
-                                label: const Text('Keluar dari akun'),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -250,9 +241,8 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
-  Widget _connectionTab() {
-    return ListView(
-      padding: const EdgeInsets.all(20),
+  Widget _connectionFields() {
+    return Column(
       children: [
         if (_profiles.isNotEmpty) ...[
           DropdownButtonFormField<String>(
@@ -282,10 +272,6 @@ class _SetupScreenState extends State<SetupScreen> {
             onChanged: _saving ? null : _switchProfile,
           ),
           const SizedBox(height: 8),
-          const Text(
-            'Setiap koneksi memiliki cache, transaksi lokal, outbox, dan printer binding sendiri.',
-          ),
-          const SizedBox(height: 14),
         ],
         TextField(
           controller: _backendUrl,
@@ -304,67 +290,17 @@ class _SetupScreenState extends State<SetupScreen> {
             prefixIcon: Icon(Icons.key),
           ),
         ),
-        const SizedBox(height: 14),
-        const Text(
-          'Gunakan alamat yang dapat dijangkau perangkat Android. Untuk emulator Android, localhost komputer adalah http://10.0.2.2/finance.',
-        ),
       ],
     );
   }
 
-  Widget _printerTab() {
-    final ready = widget.initialSettings.authToken.isNotEmpty;
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const Icon(Icons.print, size: 48),
-        const SizedBox(height: 12),
-        Text(
-          'Printer POS',
-          style: Theme.of(
-            context,
-          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Daftar printer mengikuti pengaturan printer di server finance. Hubungan Bluetooth, nama perangkat, dan lebar kertas disimpan lokal di APK.',
-        ),
-        const SizedBox(height: 18),
-        OutlinedButton.icon(
-          onPressed:
-              ready
-                  ? () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder:
-                            (_) => PrinterSettingsScreen(
-                              settings: _draftSettings(),
-                            ),
-                      ),
-                    );
-                  }
-                  : null,
-          icon: const Icon(Icons.manage_accounts),
-          label: const Text('Kelola printer server & Bluetooth'),
-        ),
-        if (!ready) ...[
-          const SizedBox(height: 12),
-          const Text(
-            'Simpan pengaturan, login kembali, lalu buka tab ini untuk mengelola printer.',
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _deviceTab() {
-    return ListView(
-      padding: const EdgeInsets.all(20),
+  Widget _deviceFields() {
+    return Column(
       children: [
         TextField(
           controller: _terminalKey,
           decoration: const InputDecoration(
-            labelText: 'Device key terminal',
+            labelText: 'Kode perangkat',
             prefixIcon: Icon(Icons.devices),
           ),
         ),
@@ -399,32 +335,9 @@ class _SetupScreenState extends State<SetupScreen> {
           contentPadding: EdgeInsets.zero,
           value: _backgroundSync,
           onChanged: (value) => setState(() => _backgroundSync = value),
-          title: const Text('Sinkronisasi background'),
-          subtitle: const Text(
-            'WorkManager mencoba sinkron otomatis minimal setiap 15 menit saat jaringan tersedia.',
-          ),
+          title: const Text('Sinkronisasi otomatis'),
         ),
       ],
-    );
-  }
-
-  AppSettings _draftSettings() {
-    return AppSettings(
-      backendUrl: _backendUrl.text.trim(),
-      terminalDeviceKey: _terminalKey.text.trim(),
-      profileId: widget.initialSettings.profileId,
-      serverScope: widget.initialSettings.serverScope,
-      mobileApiKey: _mobileApiKey.text.trim(),
-      authToken: widget.initialSettings.authToken,
-      username: widget.initialSettings.username,
-      authExpiresAt: widget.initialSettings.authExpiresAt,
-      outletId: int.tryParse(_outletId.text.trim()) ?? 0,
-      terminalId: int.tryParse(_terminalId.text.trim()) ?? 0,
-      backgroundSyncEnabled: _backgroundSync,
-      printerName: widget.initialSettings.printerName,
-      printerAddress: widget.initialSettings.printerAddress,
-      printerPaperWidth: widget.initialSettings.printerPaperWidth,
-      printerRoutes: widget.initialSettings.printerRoutes,
     );
   }
 

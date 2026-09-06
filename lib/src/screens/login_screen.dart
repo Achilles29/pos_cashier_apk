@@ -74,7 +74,10 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (error) {
       setState(() {
         _busy = false;
-        _message = error.toString();
+        _message =
+            error is FinanceApiException
+                ? error.userMessage
+                : error.toString().replaceFirst('Exception: ', '');
       });
     }
   }

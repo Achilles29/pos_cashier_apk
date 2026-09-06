@@ -176,6 +176,9 @@ class CashierSession {
     required this.terminalName,
     required this.openedAt,
     required this.status,
+    this.backupMode = false,
+    this.ownerTerminalId = 0,
+    this.originTerminalId = 0,
   });
 
   final int sessionId;
@@ -185,6 +188,9 @@ class CashierSession {
   final String terminalName;
   final String openedAt;
   final String status;
+  final bool backupMode;
+  final int ownerTerminalId;
+  final int originTerminalId;
 
   bool get isOpen => status.toUpperCase() == 'OPEN';
 
@@ -200,6 +206,11 @@ class CashierSession {
       terminalName: _stringValue(json['terminal_name'], '-'),
       openedAt: _stringValue(json['opened_at'], '-'),
       status: _stringValue(json['session_status'], 'OPEN'),
+      backupMode: json['backup_mode'] == true,
+      ownerTerminalId: _intValue(
+        json['owner_terminal_id'] ?? json['terminal_id'],
+      ),
+      originTerminalId: _intValue(json['origin_terminal_id']),
     );
   }
 }
@@ -262,6 +273,7 @@ class BundleItem {
     required this.availabilityStatus,
     required this.estimatedAvailableQty,
     required this.items,
+    this.bundleDivisionId = 0,
     this.photoUrl = '',
   });
 
@@ -273,9 +285,13 @@ class BundleItem {
   final String availabilityStatus;
   final double estimatedAvailableQty;
   final List<BundleComponent> items;
+  final int bundleDivisionId;
   final String photoUrl;
 
-  int get divisionId => items.isEmpty ? 0 : items.first.divisionId;
+  int get divisionId =>
+      bundleDivisionId > 0
+          ? bundleDivisionId
+          : (items.isEmpty ? 0 : items.first.divisionId);
 
   static BundleItem fromJson(Map<String, Object?> json) {
     final rawItems = json['items'];
@@ -287,6 +303,9 @@ class BundleItem {
       price: _doubleValue(json['selling_price']),
       availabilityStatus: _stringValue(json['availability_status'], 'CHECK'),
       estimatedAvailableQty: _doubleValue(json['estimated_available_qty']),
+      bundleDivisionId: _intValue(
+        json['product_division_id'] ?? json['division_id'],
+      ),
       photoUrl: _stringValue(
         json['photo_url'] ?? json['photo_path'] ?? json['image_url'],
         '',

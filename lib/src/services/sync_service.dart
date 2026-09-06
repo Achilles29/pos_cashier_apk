@@ -118,7 +118,13 @@ class SyncService {
 
   Future<List<ProductItem>> productsFromCache() async {
     final cache = await localDatabase.readMasterCache('bootstrap');
-    final rows = (cache?['products'] as List?) ?? const [];
+    final rawRows = cache?['products'];
+    final rows =
+        rawRows is List
+            ? rawRows
+            : rawRows is Map && rawRows['rows'] is List
+            ? rawRows['rows'] as List
+            : const [];
     return rows
         .whereType<Map>()
         .map((row) => ProductItem.fromJson(Map<String, Object?>.from(row)))
@@ -127,7 +133,13 @@ class SyncService {
 
   Future<List<BundleItem>> bundlesFromCache() async {
     final cache = await localDatabase.readMasterCache('bootstrap');
-    final rows = (cache?['bundles'] as List?) ?? const [];
+    final rawRows = cache?['bundles'];
+    final rows =
+        rawRows is List
+            ? rawRows
+            : rawRows is Map && rawRows['rows'] is List
+            ? rawRows['rows'] as List
+            : const [];
     return rows
         .whereType<Map>()
         .map((row) => BundleItem.fromJson(Map<String, Object?>.from(row)))
@@ -170,20 +182,39 @@ class SyncService {
 
   Future<void> _pullShiftState() async {
     final payload = await _api.sessionStatus();
+    final rawSession = payload['session'];
+    if (rawSession is Map) {
+      final session = Map<String, Object?>.from(rawSession);
+      session['backup_mode'] = payload['backup_mode'] == true;
+      session['owner_terminal_id'] = _syncInt(payload['owner_terminal_id']);
+      session['origin_terminal_id'] = _syncInt(payload['origin_terminal_id']);
+      payload['session'] = session;
+    }
     await localDatabase.saveMasterCache('cashier_session', payload);
   }
 
   Future<void> _pushOutbox() async {
     final rows = await localDatabase.pendingOutbox();
+    final binding = await _serverBindingFromCache();
     for (final row in rows) {
       final id = row['id'] as int;
       try {
         final payload =
             jsonDecode(row['payload'] as String) as Map<String, Object?>;
-        final response = await _api.pushOrder(payload);
+        final requestPayload = {
+          ...payload,
+          if (binding['outlet_id'] is int && (binding['outlet_id'] as int) > 0)
+            'outlet_id': binding['outlet_id'],
+          if (binding['terminal_id'] is int &&
+              (binding['terminal_id'] as int) > 0)
+            'terminal_id': binding['terminal_id'],
+          if (settings.terminalDeviceKey.trim().isNotEmpty)
+            'terminal_device_key': settings.terminalDeviceKey.trim(),
+        };
+        final response = await _api.pushOrder(requestPayload);
         await localDatabase.markOutboxSynced(id, {
           ...response,
-          'local_uuid': payload['local_uuid'],
+          'local_uuid': requestPayload['local_uuid'],
         });
       } catch (error) {
         if (error is FinanceApiException &&
@@ -198,4 +229,21 @@ class SyncService {
       }
     }
   }
+
+  Future<Map<String, int>> _serverBindingFromCache() async {
+    if (settings.authToken.trim().isEmpty) return const {};
+    final bootstrap = await cashierBootstrapFromCache();
+    final outletId = _syncInt(bootstrap['default_outlet_id']);
+    final terminalId = _syncInt(bootstrap['default_terminal_id']);
+    return {
+      if (outletId > 0) 'outlet_id': outletId,
+      if (terminalId > 0) 'terminal_id': terminalId,
+    };
+  }
+}
+
+int _syncInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
 }

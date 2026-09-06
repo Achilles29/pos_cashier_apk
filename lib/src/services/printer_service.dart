@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'dart:convert';
 
 class BluetoothPrinter {
   const BluetoothPrinter({required this.name, required this.address});
@@ -29,6 +30,8 @@ class PrinterService {
   Future<void> printText({
     required String address,
     required String text,
+    List<Map<String, Object?>> segments = const [],
+    int paperWidthMm = 80,
     int copies = 1,
     String cutMode = 'PARTIAL',
     bool openDrawer = false,
@@ -36,6 +39,8 @@ class PrinterService {
     return _channel.invokeMethod<void>('printText', {
       'address': address,
       'text': text,
+      'segmentsJson': jsonEncode(segments),
+      'paperWidthMm': paperWidthMm,
       'copies': copies,
       'cutMode': cutMode,
       'openDrawer': openDrawer,

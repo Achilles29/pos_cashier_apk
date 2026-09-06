@@ -273,7 +273,21 @@ class LocalDatabase {
   }) async {
     final db = await database;
     final now = DateTime.now().toIso8601String();
-    final localUuid = 'ORD-${_uuid.v4()}';
+    final requestedServerId = _databaseInt(payload['id']);
+    var localUuid = 'ORD-${_uuid.v4()}';
+    if (requestedServerId > 0) {
+      final existing = await db.query(
+        'local_orders',
+        columns: ['local_uuid'],
+        where: 'scope_key = ? AND server_id = ?',
+        whereArgs: [_scopeKey, requestedServerId],
+        orderBy: 'updated_at DESC',
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        localUuid = existing.first['local_uuid']?.toString() ?? localUuid;
+      }
+    }
     final eventUuid = 'EVT-${_uuid.v4()}';
     final finalPayload = {
       ...payload,
@@ -283,17 +297,41 @@ class LocalDatabase {
     };
 
     await db.transaction((txn) async {
-      await txn.insert('local_orders', {
-        'local_uuid': localUuid,
-        'scope_key': _scopeKey,
-        'server_id': null,
-        'order_no': null,
-        'status': 'LOCAL_DRAFT',
-        'sync_status': 'PENDING',
-        'payload': jsonEncode(finalPayload),
-        'created_at': now,
-        'updated_at': now,
-      });
+      final existingRows = await txn.query(
+        'local_orders',
+        columns: ['local_uuid'],
+        where: 'scope_key = ? AND local_uuid = ?',
+        whereArgs: [_scopeKey, localUuid],
+        limit: 1,
+      );
+      if (existingRows.isNotEmpty) {
+        await txn.update(
+          'local_orders',
+          {
+            'status': 'LOCAL_DRAFT',
+            'sync_status': 'PENDING',
+            'payload': jsonEncode(finalPayload),
+            'updated_at': now,
+          },
+          where: 'scope_key = ? AND local_uuid = ?',
+          whereArgs: [_scopeKey, localUuid],
+        );
+      } else {
+        await txn.insert('local_orders', {
+          'local_uuid': localUuid,
+          'scope_key': _scopeKey,
+          'server_id': requestedServerId > 0 ? requestedServerId : null,
+          'order_no': payload['order_no'],
+          'status':
+              requestedServerId > 0
+                  ? (payload['confirm_order'] == true ? 'CONFIRMED' : 'DRAFT')
+                  : 'LOCAL_DRAFT',
+          'sync_status': 'PENDING',
+          'payload': jsonEncode(finalPayload),
+          'created_at': now,
+          'updated_at': now,
+        });
+      }
       await txn.insert('sync_outbox', {
         'scope_key': _scopeKey,
         'event_uuid': eventUuid,
@@ -308,6 +346,12 @@ class LocalDatabase {
     });
 
     return localUuid;
+  }
+
+  int _databaseInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   Future<Map<String, Object?>?> localOrder(String localUuid) async {
