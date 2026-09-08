@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/finance_api_client.dart';
 import '../services/local_database.dart';
+import '../services/pos_print_dispatcher.dart';
 import '../services/printer_service.dart';
 import '../services/settings_store.dart';
 
@@ -27,6 +28,7 @@ class PrinterSettingsScreen extends StatefulWidget {
 class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   final LocalDatabase _db = LocalDatabase.instance;
   final PrinterService _printer = PrinterService();
+  final PosPrintDispatcher _printDispatcher = PosPrintDispatcher();
   late final FinanceApiClient _api;
   List<Map<String, Object?>> _serverPrinters = const [];
   List<Map<String, Object?>> _localPrinters = const [];
@@ -129,13 +131,14 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
         'print_scope': serverRow['print_scope']?.toString() ?? 'ALL',
         'bluetooth_name': result['bluetooth_name']?.toString() ?? '',
         'bluetooth_address': result['bluetooth_address']?.toString() ?? '',
-        // Paper/layout/copy/cut rules remain server-owned. This field is only
-        // retained for local schema compatibility and is never edited here.
-        'paper_width': _asInt(serverRow['paper_width_mm']) == 80 ? 80 : 58,
+        // The physical Bluetooth printer belongs to this APK/device. Do not
+        // import its paper and character settings from the Finance server.
+        'paper_width': _asInt(result['paper_width']) == 80 ? 80 : 58,
+        'chars_per_line': _asInt(result['chars_per_line']),
         'is_active': 1,
       });
       _showMessage(
-        'Printer berhasil dihubungkan. Pengaturan layout tetap mengikuti Finance.',
+        'Printer berhasil dihubungkan. Ukuran kertas dan karakter/baris tersimpan di APK ini.',
       );
       await _load();
     } catch (error) {
@@ -230,6 +233,10 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       if (!mounted) return;
       final template =
           (response['template'] as Map?)?.cast<String, Object?>() ?? const {};
+      final localPaperWidth = _asInt(local?['paper_width']) == 80 ? 80 : 58;
+      final localChars = _asInt(local?['chars_per_line']) > 0
+          ? _asInt(local?['chars_per_line'])
+          : (localPaperWidth == 58 ? 32 : 48);
       final previewLines =
           ((response['preview'] as Map?)?['lines'] as List?)
               ?.map((line) => line.toString())
@@ -252,7 +259,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
                       Text(
-                        'Divisi: ${template['division_filter'] ?? 'ALL'} | ${template['chars_per_line'] ?? '-'} karakter/baris',
+                        'Template: ${template['division_filter'] ?? 'ALL'} | Cetak APK: $localPaperWidth mm, $localChars karakter/baris',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       const Divider(height: 24),
@@ -275,13 +282,17 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
             ),
       );
       if (confirmed != true) return;
-      await _printer.printText(
-        address: address,
-        text: text,
-        copies: _asInt(package['copies']) <= 0 ? 1 : _asInt(package['copies']),
-        cutMode: package['cut_mode']?.toString() ?? 'PARTIAL',
-        openDrawer: _asInt(package['open_drawer']) == 1,
-      );
+      final result = await _printDispatcher.printTargets([
+        {
+          ...package,
+          'printer_id': serverId,
+          'printer_name': serverRow['device_name']?.toString() ?? 'Printer',
+          'printer_role': serverRow['printer_role']?.toString() ?? 'CUSTOM',
+        },
+      ]);
+      if (result.printed <= 0) {
+        throw StateError(result.message);
+      }
       _showMessage('Test print berhasil dikirim ke printer.');
     } catch (error) {
       _showMessage('Test print gagal: ${_friendlyPrinterError(error)}');
@@ -452,6 +463,8 @@ class _PrinterBindingDialog extends StatefulWidget {
 class _PrinterBindingDialogState extends State<_PrinterBindingDialog> {
   late final TextEditingController _name;
   late final TextEditingController _address;
+  late final TextEditingController _charsPerLine;
+  int _paperWidth = 58;
 
   @override
   void initState() {
@@ -462,12 +475,18 @@ class _PrinterBindingDialogState extends State<_PrinterBindingDialog> {
     _address = TextEditingController(
       text: widget.existing?['bluetooth_address']?.toString() ?? '',
     );
+    _paperWidth = _asInt(widget.existing?['paper_width']) == 80 ? 80 : 58;
+    final savedChars = _asInt(widget.existing?['chars_per_line']);
+    _charsPerLine = TextEditingController(
+      text: '${savedChars > 0 ? savedChars : (_paperWidth == 58 ? 32 : 48)}',
+    );
   }
 
   @override
   void dispose() {
     _name.dispose();
     _address.dispose();
+    _charsPerLine.dispose();
     super.dispose();
   }
 
@@ -559,7 +578,37 @@ class _PrinterBindingDialogState extends State<_PrinterBindingDialog> {
                     onPressed: _choose,
                     icon: const Icon(Icons.bluetooth_searching),
                   ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<int>(
+                value: _paperWidth,
+                decoration: const InputDecoration(
+                  labelText: 'Ukuran kertas di APK',
+                  prefixIcon: Icon(Icons.receipt_long_outlined),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 58, child: Text('58 mm')),
+                  DropdownMenuItem(value: 80, child: Text('80 mm')),
                 ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  setState(() {
+                    _paperWidth = value;
+                    _charsPerLine.text = value == 58 ? '32' : '48';
+                  });
+                },
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _charsPerLine,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Jumlah karakter per baris',
+                  hintText: _paperWidth == 58 ? 'Contoh: 32' : 'Contoh: 48',
+                  helperText: 'Disimpan di APK ini; tidak mengikuti database Finance.',
+                  prefixIcon: const Icon(Icons.format_size),
+                ),
               ),
             ],
           ),
@@ -576,9 +625,18 @@ class _PrinterBindingDialogState extends State<_PrinterBindingDialog> {
               _message('Alamat Bluetooth wajib diisi.');
               return;
             }
+            final chars = int.tryParse(_charsPerLine.text.trim()) ?? 0;
+            final min = _paperWidth == 58 ? 24 : 32;
+            final max = _paperWidth == 58 ? 48 : 64;
+            if (chars < min || chars > max) {
+              _message('Jumlah karakter untuk ${_paperWidth} mm harus antara $min–$max.');
+              return;
+            }
             Navigator.pop(context, {
               'bluetooth_name': _name.text.trim(),
               'bluetooth_address': _address.text.trim(),
+              'paper_width': _paperWidth,
+              'chars_per_line': chars,
             });
           },
           icon: const Icon(Icons.save),

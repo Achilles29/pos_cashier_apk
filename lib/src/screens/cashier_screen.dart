@@ -1467,6 +1467,9 @@ class _CashierScreenState extends State<CashierScreen> {
   void _selectCatalogMode(String mode) {
     setState(() {
       _catalogMode = mode;
+      // A bundle can belong to more than one product division (or no single
+      // division). Never carry the previous product-tab filter into Bundle.
+      _divisionId = mode == 'BUNDLE' ? 0 : _divisionId;
       _remoteProducts = const [];
       _remoteBundles = const [];
     });

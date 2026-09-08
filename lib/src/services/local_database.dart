@@ -84,7 +84,7 @@ class LocalDatabase {
     final path = p.join(await getDatabasesPath(), 'pos_cashier_local.db');
     final opened = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE app_meta (
@@ -148,6 +148,7 @@ class LocalDatabase {
             bluetooth_name TEXT NOT NULL,
             bluetooth_address TEXT NOT NULL,
             paper_width INTEGER NOT NULL DEFAULT 58,
+            chars_per_line INTEGER NOT NULL DEFAULT 32,
             is_active INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (scope_key, server_printer_id)
@@ -237,6 +238,11 @@ class LocalDatabase {
               PRIMARY KEY (scope_key, server_order_id, document_type)
             )
           ''');
+        }
+        if (oldVersion < 5) {
+          await db.execute(
+            'ALTER TABLE local_printer ADD COLUMN chars_per_line INTEGER NOT NULL DEFAULT 32',
+          );
         }
       },
     );
@@ -631,6 +637,18 @@ class LocalDatabase {
       whereArgs: [_scopeKey],
       orderBy: 'printer_role ASC, server_name ASC',
     );
+  }
+
+  Future<Map<String, Object?>?> localPrinterFor(int serverPrinterId) async {
+    if (serverPrinterId <= 0) return null;
+    final db = await database;
+    final rows = await db.query(
+      'local_printer',
+      where: 'scope_key = ? AND server_printer_id = ? AND is_active = 1',
+      whereArgs: [_scopeKey, serverPrinterId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Map<String, Object?>.from(rows.first);
   }
 
   Future<void> saveLocalPrinter(Map<String, Object?> row) async {

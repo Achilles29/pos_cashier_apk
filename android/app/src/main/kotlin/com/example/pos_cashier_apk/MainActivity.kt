@@ -220,7 +220,13 @@ class MainActivity : FlutterActivity() {
                     val x = byteIndex * 8 + bit
                     if (x < bitmap.width) {
                         val pixel = bitmap.getPixel(x, y)
-                        val luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+                        // PNG logos frequently have transparent pixels whose
+                        // hidden RGB value is black. Composite those pixels on
+                        // white before thresholding, otherwise the transparent
+                        // canvas is printed as one solid black rectangle.
+                        val sourceLuminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+                        val alpha = Color.alpha(pixel)
+                        val luminance = (sourceLuminance * alpha + 255 * (255 - alpha)) / 255
                         if (luminance < 180) value = value or (1 shl (7 - bit))
                     }
                 }
