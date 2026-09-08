@@ -76,7 +76,7 @@ class _LoginScreenState extends State<LoginScreen> {
         _busy = false;
         _message =
             error is FinanceApiException
-                ? error.userMessage
+                ? error.userMessageForBackend(widget.settings.normalizedBackendUrl)
                 : error.toString().replaceFirst('Exception: ', '');
       });
     }

@@ -336,7 +336,7 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
                   .map((row) => Map<String, Object?>.from(row))
                   .toList()
               : const [];
-      // Keep compatibility with a Finance2 deployment before the printer
+      // Keep compatibility with deployments before the printer
       // options were added to cashier bootstrap.
       if (printers.isEmpty) {
         final response = await _api.printers();

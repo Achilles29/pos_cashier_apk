@@ -273,7 +273,7 @@ class _IncomingOrdersScreenState extends State<IncomingOrdersScreen>
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Berikan alasan agar keputusan ini mudah dilacak di Finance2.',
+                      'Berikan alasan agar keputusan ini mudah dilacak di riwayat POS.',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 14),

@@ -1893,7 +1893,7 @@ class _CashierScreenState extends State<CashierScreen> {
         );
         _showMessage(
           response['attached_to_existing_session'] == true
-              ? 'APK terhubung sebagai backup ke shift Finance2 yang sedang aktif.'
+              ? 'APK terhubung sebagai backup ke sesi kasir yang sedang aktif.'
               : 'Kasir berhasil dibuka.',
         );
         await _runSync();

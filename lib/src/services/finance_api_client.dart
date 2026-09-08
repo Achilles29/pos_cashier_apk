@@ -20,11 +20,15 @@ class FinanceApiException implements Exception {
 
   bool get isUnauthorized => statusCode == 401;
 
-  String get userMessage {
+  /// Produces a safe, actionable message without exposing which credential
+  /// (password or device key) was rejected by the server.
+  String userMessageForBackend(String backendUrl) {
+    final configuredUrl = backendUrl.trim().replaceFirst(RegExp(r'/$'), '');
+    final serverLabel = configuredUrl.isEmpty ? 'server POS' : configuredUrl;
     if (statusCode == 401) {
       final detail = message.trim();
       if (detail.contains('Kredensial atau perangkat tidak valid')) {
-        return 'Login ditolak. Pastikan username/password Finance2 benar dan device key APK sudah sama persis dengan terminal Android yang aktif di Finance2 > POS > Outlet + Terminal.';
+        return 'Login ditolak oleh $serverLabel. Pastikan username/password benar, lalu Device Key APK sama persis dengan terminal Android aktif di POS > Outlet + Terminal.';
       }
       if (detail.isNotEmpty &&
           detail != 'Token mobile atau sesi login tidak tersedia.') {
@@ -34,7 +38,7 @@ class FinanceApiException implements Exception {
     }
     if (statusCode == 403) {
       if (message.contains('Sesi kasir tidak sesuai dengan perangkat')) {
-        return 'Perangkat terhubung sebagai backup kasir. Pastikan akun dan outletnya sama dengan sesi Finance2 yang sedang aktif.';
+        return 'Perangkat terhubung sebagai backup kasir. Pastikan akun dan outletnya sama dengan sesi kasir aktif di $serverLabel.';
       }
       if (path.contains('/printers')) {
         return 'Akun ini belum diberi akses printer. Hubungi admin untuk mengaktifkannya.';
@@ -59,6 +63,8 @@ class FinanceApiException implements Exception {
     return 'Server tidak dapat dijangkau. Data lokal tetap aman.';
   }
 
+  String get userMessage => userMessageForBackend('');
+
   @override
   String toString() => 'Finance API HTTP $statusCode ($path): $message';
 }
@@ -75,7 +81,7 @@ class FinanceApiClient {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'X-Pos-Terminal-Key': settings.terminalDeviceKey,
-      // Finance2 token authorization uses the explicit mobile device header.
+      // Mobile token authorization uses the explicit mobile device header.
       // Keep the terminal alias for older deployments during the transition.
       'X-Pos-Mobile-Device-Key': settings.terminalDeviceKey,
     };
