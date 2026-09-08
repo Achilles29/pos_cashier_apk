@@ -206,12 +206,26 @@ class FinanceApiClient {
     return postJson('/pos-mobile/reservations/verify/$reservationId', const {});
   }
 
+  Future<Map<String, Object?>> reservationRejectStepUpVerify({
+    required int reservationId,
+    required String password,
+  }) {
+    return postJson('/pos-mobile/reservations/reject-step-up/verify', {
+      'reservation_id': reservationId,
+      'password': password,
+    });
+  }
+
   Future<Map<String, Object?>> reservationReject(
     int reservationId,
-    String reason,
-  ) {
+    String reason, {
+    bool refundDeposit = false,
+    String stepUpProof = '',
+  }) {
     return postJson('/pos-mobile/reservations/reject/$reservationId', {
       'reason': reason,
+      'refund_deposit': refundDeposit,
+      if (stepUpProof.trim().isNotEmpty) 'step_up_proof': stepUpProof.trim(),
     });
   }
 
@@ -314,6 +328,18 @@ class FinanceApiClient {
     return getJson('/pos-mobile/orders/reversal-preview/$orderId');
   }
 
+  Future<Map<String, Object?>> orderReversalStepUpVerify({
+    required int orderId,
+    required String action,
+    required String password,
+  }) {
+    return postJson('/pos-mobile/orders/reversal-step-up/verify', {
+      'order_id': orderId,
+      'action': action,
+      'password': password,
+    });
+  }
+
   Future<Map<String, Object?>> voidSave(Map<String, Object?> payload) {
     return postJson('/pos-mobile/orders/void/save', payload);
   }
@@ -334,10 +360,22 @@ class FinanceApiClient {
     int orderId, {
     String lineScope = 'ALL',
     int printerId = 0,
+    required String stepUpProof,
   }) {
     return postJson('/pos-mobile/orders/reprint-targets/$orderId', {
       'line_scope': lineScope,
       'printer_id': printerId,
+      'step_up_proof': stepUpProof,
+    });
+  }
+
+  Future<Map<String, Object?>> orderReprintStepUpVerify({
+    required int orderId,
+    required String password,
+  }) {
+    return postJson('/pos-mobile/orders/reprint-step-up/verify', {
+      'order_id': orderId,
+      'password': password,
     });
   }
 
@@ -411,10 +449,22 @@ class FinanceApiClient {
     return getJson('/pos-mobile/cashier/close-preview');
   }
 
-  Future<Map<String, Object?>> cashierClose({required double actualCash}) {
+  Future<Map<String, Object?>> cashierCloseStepUpVerify({
+    required String password,
+  }) {
+    return postJson('/pos-mobile/cashier/close-step-up/verify', {
+      'password': password,
+    });
+  }
+
+  Future<Map<String, Object?>> cashierClose({
+    required double actualCash,
+    required String stepUpProof,
+  }) {
     return postJson('/pos-mobile/cashier/close', {
       'actual_cash': actualCash,
       'notes': 'Ditutup dari Android POS',
+      'step_up_proof': stepUpProof,
     });
   }
 

@@ -226,3 +226,32 @@ Harus membalas JSON:
 ```json
 {"ok":true,"server_time":"...","service":"finance-pos-mobile"}
 ```
+
+## Kontrak APK terkini
+
+APK dan Finance memakai kontrak capability POS Mobile versi 3. Aksi bernilai
+tinggi berikut selalu meminta password sekali lagi, lalu mengirim proof yang
+singkat, terikat pada user/perangkat/aksi/target, dan hanya dapat dipakai satu
+kali:
+
+- Void dan Refund order;
+- Cetak ulang order;
+- Tutup kasir;
+- Penolakan reservasi yang sekaligus mengembalikan DP.
+
+Password tidak pernah ditulis ke database lokal, outbox, atau payload aksi
+akhir. APK meminta proof dari endpoint verify Finance tepat sebelum submit.
+
+### Offline dan tiket printer
+
+Order draft/confirm dapat disimpan segera saat server tidak dapat dijangkau.
+Saat server kembali online, `client_event_id` membuat push tetap idempoten.
+Payment, refund, void, dan tutup kasir tetap online-only karena memengaruhi
+uang dan tidak boleh direplikasi dari perangkat.
+
+Jika order confirm diterima server ketika APK sedang offline, APK membuat
+tugas cetak lokal. Saat aplikasi aktif lagi, ia mengambil print target dari
+Finance dan mengirim ke binding Bluetooth yang tepat. Tugas tanpa printer
+yang siap ditunda dengan backoff; bila hanya sebagian target berhasil, APK
+tidak mencetak otomatis ulang agar tiket dapur tidak ganda—kasir memakai
+menu Cetak Ulang setelah memeriksa printer.

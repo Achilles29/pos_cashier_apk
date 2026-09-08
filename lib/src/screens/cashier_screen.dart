@@ -13,6 +13,7 @@ import '../services/pos_print_dispatcher.dart';
 import '../services/photo_cache_service.dart';
 import '../services/settings_store.dart';
 import '../services/sync_service.dart';
+import '../widgets/sensitive_action_proof_dialog.dart';
 import 'setup_screen.dart';
 import 'order_workspace_screen.dart';
 import 'printer_settings_screen.dart';
@@ -86,6 +87,7 @@ class _CashierScreenState extends State<CashierScreen> {
   bool _modalActive = false;
   bool _initialSessionGateDone = false;
   bool _openingPromptShown = false;
+  int _compactPanel = 1;
   int _localDraftCount = 0;
   final Map<int, CartLine> _cart = {};
   final GlobalKey<_ActiveOrdersPanelState> _activeOrdersKey =
@@ -214,6 +216,9 @@ class _CashierScreenState extends State<CashierScreen> {
       _precacheBundlePhotos(bundles);
       if (!silent && !preserveCatalog) await _applyServerTerminalDefaults();
       await _refreshLocalDraftCount();
+      if (snapshot.online) {
+        await _dispatchPendingConfirmationPrints(silent: silent);
+      }
       if (!silent) {
         await _ensureInitialCashierSession();
       }
@@ -765,7 +770,13 @@ class _CashierScreenState extends State<CashierScreen> {
       payload,
       eventType: confirmOrder ? 'ORDER_CONFIRM' : 'ORDER_UPSERT',
     );
-    await _runSync();
+    if (_sync.online) {
+      await _runSync();
+    } else {
+      // Saving offline must be immediate. The foreground/background sync will
+      // deliver this idempotent event when a server connection returns.
+      unawaited(_runSync(silent: true));
+    }
     final pending = await _db.pendingOutboxCount();
     final local = await _db.localOrder(uuid);
     final localSyncStatus = local?['sync_status']?.toString() ?? 'PENDING';
@@ -791,11 +802,7 @@ class _CashierScreenState extends State<CashierScreen> {
           : 'Order masuk outbox. $pending event menunggu sinkron.',
     );
     _activeOrdersKey.currentState?._load();
-    final serverId = _asInt(local?['server_id']);
-    if (confirmOrder && serverId > 0 && _sync.online) {
-      await _printOrderConfirmation(serverId);
-    }
-    return serverId;
+    return _asInt(local?['server_id']);
   }
 
   Future<void> _startOrderAppend(Map<String, Object?>? row) async {
@@ -1027,19 +1034,46 @@ class _CashierScreenState extends State<CashierScreen> {
     if (mounted) _runSync(silent: true);
   }
 
-  Future<void> _printOrderConfirmation(int orderId) async {
-    try {
-      final response = await _api.orderConfirmPrintTargets(orderId);
-      final targets = (response['direct_print_targets'] as List?) ?? const [];
-      final result = await _printDispatcher.printTargets(
-        targets.whereType<Map>(),
-      );
-      await _showPrintOutcome(result, title: 'Cetak order');
-    } catch (error) {
-      await _showPrintFailure(
-        title: 'Order tersimpan, cetak belum berhasil',
-        message: _friendlyError(error),
-      );
+  Future<void> _dispatchPendingConfirmationPrints({
+    required bool silent,
+  }) async {
+    final orderIds = await _db.pendingConfirmationPrintOrders();
+    for (final orderId in orderIds) {
+      try {
+        final response = await _api.orderConfirmPrintTargets(orderId);
+        final targets = (response['direct_print_targets'] as List?) ?? const [];
+        if (targets.isEmpty) {
+          await _db.markConfirmationPrintComplete(orderId);
+          continue;
+        }
+        final result = await _printDispatcher.printTargets(
+          targets.whereType<Map>(),
+        );
+        if (result.printed > 0) {
+          // A retry would re-send successful targets and can duplicate a
+          // kitchen ticket. Leave partial failures for a deliberate Reprint.
+          await _db.markConfirmationPrintComplete(orderId);
+          if (result.hasProblem && !silent) {
+            _showMessage(
+              'Order #$orderId sudah tersinkron. Sebagian cetak perlu diperiksa lalu gunakan Cetak Ulang bila diperlukan.',
+            );
+          }
+          continue;
+        }
+        await _db.postponeConfirmationPrint(orderId, result.message);
+        if (!silent) {
+          _showMessage(
+            'Order #$orderId sudah tersinkron; tiket menunggu printer. Hubungkan printer lalu sinkronkan kembali.',
+          );
+        }
+      } catch (error) {
+        await _db.postponeConfirmationPrint(orderId, _friendlyError(error));
+        if (!silent) {
+          _showMessage(
+            'Order #$orderId tersinkron, tetapi tiket belum dapat disiapkan. Sistem akan mencoba lagi.',
+          );
+        }
+      }
     }
   }
 
@@ -1897,6 +1931,30 @@ class _CashierScreenState extends State<CashierScreen> {
       return;
     }
 
+    if (_session?.backupMode == true) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.devices_other_outlined),
+          title: const Text('Tutup shift bersama?'),
+          content: const Text(
+            'APK ini sedang menjadi terminal backup. Menutup kasir di sini juga akan menutup sesi yang sedang dipakai POS web. Lanjutkan hanya bila seluruh transaksi sudah selesai.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Tetap buka'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Lanjut tutup shift'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
     Map<String, Object?> report = const {};
     try {
       final preview = await _api.cashierClosePreview();
@@ -2033,8 +2091,20 @@ class _CashierScreenState extends State<CashierScreen> {
       denominationController.dispose();
     }
     if (actualCash == null) return;
+    final proof = await requestSensitiveActionProof(
+      context,
+      title: 'Verifikasi tutup kasir',
+      description:
+          'Tutup kasir akan mengakhiri sesi yang juga dipakai POS web. Masukkan password Anda untuk melanjutkan.',
+      confirmLabel: 'Verifikasi & tutup',
+      verify: (password) => _api.cashierCloseStepUpVerify(password: password),
+    );
+    if (proof == null) return;
     try {
-      final result = await _api.cashierClose(actualCash: actualCash);
+      final result = await _api.cashierClose(
+        actualCash: actualCash,
+        stepUpProof: proof,
+      );
       final summary = (result['summary'] as Map?) ?? const {};
       final printTargets =
           (result['direct_print_targets'] as List?) ?? const [];
@@ -2350,14 +2420,42 @@ class _CashierScreenState extends State<CashierScreen> {
                                   SizedBox(width: 330, child: _cartPanel()),
                                 ],
                               )
-                              : ListView(
-                                padding: EdgeInsets.zero,
+                              : Column(
                                 children: [
-                                  SizedBox(height: 360, child: activeOrders),
-                                  const SizedBox(height: 12),
-                                  SizedBox(height: 560, child: _productGrid()),
-                                  const SizedBox(height: 12),
-                                  SizedBox(height: 650, child: _cartPanel()),
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: SegmentedButton<int>(
+                                      showSelectedIcon: false,
+                                      segments: [
+                                        const ButtonSegment<int>(
+                                          value: 0,
+                                          icon: Icon(Icons.receipt_long_outlined),
+                                          label: Text('Order'),
+                                        ),
+                                        const ButtonSegment<int>(
+                                          value: 1,
+                                          icon: Icon(Icons.grid_view_rounded),
+                                          label: Text('Katalog'),
+                                        ),
+                                        ButtonSegment<int>(
+                                          value: 2,
+                                          icon: const Icon(Icons.shopping_bag_outlined),
+                                          label: Text('Keranjang ${_cart.length}'),
+                                        ),
+                                      ],
+                                      selected: {_compactPanel},
+                                      onSelectionChanged: (selected) {
+                                        setState(() => _compactPanel = selected.first);
+                                      },
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: switch (_compactPanel) {
+                                      0 => activeOrders,
+                                      2 => _cartPanel(),
+                                      _ => _productGrid(),
+                                    },
+                                  ),
                                 ],
                               ),
                     );

@@ -34,13 +34,16 @@ class SyncService {
       await _pushOutbox();
 
       final pendingAfter = await localDatabase.pendingOutboxCount();
+      final blockedAfter = await localDatabase.blockedOutboxCount();
       final now = DateTime.now();
       await localDatabase.addSyncLog('OK', 'Sync selesai');
       return SyncSnapshot(
         online: true,
         outboxPending: pendingAfter,
         message:
-            pendingAfter == 0
+            blockedAfter > 0
+                ? '$blockedAfter transaksi perlu diperbaiki sebelum dapat disinkronkan.'
+                : pendingAfter == 0
                 ? 'Sinkron dengan server'
                 : '$pendingAfter event menunggu server',
         serverReachable: true,
@@ -196,8 +199,13 @@ class SyncService {
   Future<void> _pushOutbox() async {
     final rows = await localDatabase.pendingOutbox();
     final binding = await _serverBindingFromCache();
+    final blockedAggregates = <String>{};
     for (final row in rows) {
       final id = row['id'] as int;
+      final aggregateUuid = row['aggregate_uuid']?.toString() ?? '';
+      if (aggregateUuid.isNotEmpty && blockedAggregates.contains(aggregateUuid)) {
+        continue;
+      }
       try {
         final payload =
             jsonDecode(row['payload'] as String) as Map<String, Object?>;
@@ -222,6 +230,13 @@ class SyncService {
             error.statusCode < 500 &&
             !error.isUnauthorized) {
           await localDatabase.markOutboxBlocked(id, error.userMessage);
+          if (aggregateUuid.isNotEmpty) {
+            blockedAggregates.add(aggregateUuid);
+          }
+          // A rejected order must not prevent independent orders from being
+          // delivered. Later events for the same aggregate stay blocked to
+          // preserve its local order.
+          continue;
         } else {
           await localDatabase.markOutboxFailed(id, _friendlyMessage(error));
         }

@@ -1,0 +1,7 @@
+# Salin file ini menjadi android/key.properties (file asli sudah diabaikan Git).
+# Jangan menyimpan password atau keystore di repository.
+# storeFile dapat berupa path absolut atau path relatif dari folder android/.
+storeFile=/secure/path/pos-kasir-release.jks
+storePassword=GANTI_DENGAN_PASSWORD_KEYSTORE
+keyAlias=pos-kasir
+keyPassword=GANTI_DENGAN_PASSWORD_KEY

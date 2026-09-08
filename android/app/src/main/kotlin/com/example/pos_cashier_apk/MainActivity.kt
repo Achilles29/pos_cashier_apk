@@ -1,4 +1,4 @@
-package com.example.pos_cashier_apk
+package com.namuaprojects.finance.pos
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter

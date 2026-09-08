@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../models.dart';
 import '../services/finance_api_client.dart';
 import '../services/pos_print_dispatcher.dart';
+import '../widgets/sensitive_action_proof_dialog.dart';
 
 enum IncomingOrderChannel { reservation, selfOrder, onlineFood }
 
@@ -228,98 +229,142 @@ class _IncomingOrdersScreenState extends State<IncomingOrdersScreen>
   }
 
   Future<void> _reject(int id) async {
-    final reason = await showDialog<String>(
+    final controller = TextEditingController();
+    final result = await showDialog<Map<String, Object?>>(
       context: context,
       builder: (dialogContext) {
-        final controller = TextEditingController();
-        return Dialog(
-          insetPadding: const EdgeInsets.all(22),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.block_outlined,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          'Tolak order',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
+        var refundDeposit = false;
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) => Dialog(
+            insetPadding: const EdgeInsets.all(22),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.block_outlined,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'Tolak order',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Batal',
-                        onPressed: () => Navigator.pop(dialogContext),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Berikan alasan agar keputusan ini mudah dilacak di Finance2.',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: controller,
-                    autofocus: true,
-                    maxLines: 3,
-                    textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      labelText: 'Alasan penolakan',
-                      hintText:
-                          'Contoh: item habis atau data customer tidak lengkap',
-                      alignLabelWithHint: true,
-                      border: OutlineInputBorder(),
+                        IconButton(
+                          tooltip: 'Batal',
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(dialogContext),
-                        child: const Text('Batal'),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Berikan alasan agar keputusan ini mudah dilacak di Finance2.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: controller,
+                      autofocus: true,
+                      maxLines: 3,
+                      textInputAction: TextInputAction.newline,
+                      decoration: const InputDecoration(
+                        labelText: 'Alasan penolakan',
+                        hintText:
+                            'Contoh: item habis atau data customer tidak lengkap',
+                        alignLabelWithHint: true,
+                        border: OutlineInputBorder(),
                       ),
-                      const SizedBox(width: 8),
-                      FilledButton.icon(
-                        onPressed: () {
-                          final value = controller.text.trim();
-                          if (value.isNotEmpty) {
-                            Navigator.pop(dialogContext, value);
-                          }
-                        },
-                        icon: const Icon(Icons.block_outlined),
-                        label: const Text('Tolak order'),
+                    ),
+                    if (_isReservation) ...[
+                      const SizedBox(height: 10),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: refundDeposit,
+                        onChanged: (value) => setDialogState(
+                          () => refundDeposit = value ?? false,
+                        ),
+                        title: const Text('Kembalikan DP reservasi'),
+                        subtitle: const Text(
+                          'Pilih hanya bila DP benar-benar harus direfund. Setelah ini Anda diminta verifikasi password.',
+                        ),
                       ),
                     ],
-                  ),
-                ],
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          child: const Text('Batal'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          onPressed: () {
+                            final value = controller.text.trim();
+                            if (value.isNotEmpty) {
+                              Navigator.pop(dialogContext, {
+                                'reason': value,
+                                'refund_deposit': refundDeposit,
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.block_outlined),
+                          label: const Text('Tolak order'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
         );
       },
     );
-    if (reason == null || reason.trim().isEmpty) return;
+    controller.dispose();
+    final reason = result?['reason']?.toString().trim() ?? '';
+    final refundDeposit = result?['refund_deposit'] == true;
+    if (reason.isEmpty) return;
     try {
       switch (widget.channel) {
         case IncomingOrderChannel.reservation:
-          await _api.reservationReject(id, reason);
+          var proof = '';
+          if (refundDeposit) {
+            final verified = await requestSensitiveActionProof(
+              context,
+              title: 'Verifikasi refund DP',
+              description:
+                  'Pengembalian DP reservasi akan diproses oleh Finance. Masukkan password Anda untuk melanjutkan.',
+              confirmLabel: 'Verifikasi & refund DP',
+              verify: (password) => _api.reservationRejectStepUpVerify(
+                reservationId: id,
+                password: password,
+              ),
+            );
+            if (verified == null) return;
+            proof = verified;
+          }
+          await _api.reservationReject(
+            id,
+            reason,
+            refundDeposit: refundDeposit,
+            stepUpProof: proof,
+          );
         case IncomingOrderChannel.selfOrder:
           await _api.selfOrderInboxReject(id, reason);
         case IncomingOrderChannel.onlineFood:

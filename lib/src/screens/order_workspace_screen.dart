@@ -9,6 +9,7 @@ import '../models.dart';
 import '../services/finance_api_client.dart';
 import '../services/local_database.dart';
 import '../services/pos_print_dispatcher.dart';
+import '../widgets/sensitive_action_proof_dialog.dart';
 
 class OrderWorkspaceScreen extends StatefulWidget {
   const OrderWorkspaceScreen({super.key, required this.settings});
@@ -289,11 +290,21 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
     }
     final options = await _reprintOptions();
     if (options == null) return;
+    final proof = await _orderStepUpProof(
+      orderId: orderId,
+      action: 'ORDER_REPRINT',
+      title: 'Verifikasi cetak ulang',
+      description:
+          'Konfirmasi identitas Anda sebelum mengirim ulang tiket order ke printer.',
+      confirmLabel: 'Verifikasi & cetak',
+    );
+    if (proof == null) return;
     try {
       final response = await _api.orderReprintTargets(
         orderId,
         lineScope: options['line_scope']?.toString() ?? 'LATEST',
         printerId: _asInt(options['printer_id']),
+        stepUpProof: proof,
       );
       final targets = (response['direct_print_targets'] as List?) ?? const [];
       final result = await _printDispatcher.printTargets(
@@ -807,6 +818,16 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
     try {
       final payload = await _fullReversalPayload(orderId, reason);
       if (payload.isEmpty) return;
+      final proof = await _orderStepUpProof(
+        orderId: orderId,
+        action: 'VOID',
+        title: 'Verifikasi void order',
+        description:
+            'Void dapat membatalkan order dan mengubah stok. Masukkan password Anda untuk melanjutkan.',
+        confirmLabel: 'Verifikasi & void',
+      );
+      if (proof == null) return;
+      payload['step_up_proof'] = proof;
       final result = await _api.voidSave(payload);
       await _printReversal(result, isRefund: false);
       _showMessage('Void ${result['void_no'] ?? ''} berhasil disimpan.');
@@ -968,6 +989,16 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
       if (form == null) return;
       payload['payment_method_id'] = _asInt(form['payment_method_id']);
       payload['reference_no'] = form['reference_no'];
+      final proof = await _orderStepUpProof(
+        orderId: orderId,
+        action: 'REFUND',
+        title: 'Verifikasi refund',
+        description:
+            'Refund mengembalikan nilai pembayaran. Masukkan password Anda untuk melanjutkan.',
+        confirmLabel: 'Verifikasi & refund',
+      );
+      if (proof == null) return;
+      payload['step_up_proof'] = proof;
       final result = await _api.refundSave(payload);
       await _printReversal(result, isRefund: true);
       _showMessage('Refund ${result['refund_no'] ?? ''} berhasil disimpan.');
@@ -975,6 +1006,34 @@ class _OrderWorkspaceScreenState extends State<OrderWorkspaceScreen>
     } catch (error) {
       _showMessage('Refund gagal: ${_workspaceError(error)}');
     }
+  }
+
+  Future<String?> _orderStepUpProof({
+    required int orderId,
+    required String action,
+    required String title,
+    required String description,
+    required String confirmLabel,
+  }) {
+    return requestSensitiveActionProof(
+      context,
+      title: title,
+      description: description,
+      confirmLabel: confirmLabel,
+      verify: (password) {
+        if (action == 'ORDER_REPRINT') {
+          return _api.orderReprintStepUpVerify(
+            orderId: orderId,
+            password: password,
+          );
+        }
+        return _api.orderReversalStepUpVerify(
+          orderId: orderId,
+          action: action,
+          password: password,
+        );
+      },
+    );
   }
 
   Future<Map<String, Object?>> _fullReversalPayload(

@@ -74,8 +74,26 @@ class _PosCashierAppState extends State<PosCashierApp> {
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF943F35),
           brightness: Brightness.light,
+        ).copyWith(
+          primary: const Color(0xFF8C3F35),
+          onPrimary: Colors.white,
+          secondary: const Color(0xFF6E584F),
+          surface: const Color(0xFFFFFCF9),
+          onSurface: const Color(0xFF2F2521),
         ),
         scaffoldBackgroundColor: const Color(0xFFF7F3EE),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFFFF8F4),
+          foregroundColor: Color(0xFF3E2C26),
+          elevation: 0,
+          scrolledUnderElevation: 1,
+          surfaceTintColor: Colors.transparent,
+          titleTextStyle: TextStyle(
+            color: Color(0xFF3E2C26),
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         cardTheme: const CardTheme(
           color: Colors.white,
           elevation: 0,
@@ -85,8 +103,24 @@ class _PosCashierAppState extends State<PosCashierApp> {
           ),
         ),
         inputDecorationTheme: const InputDecorationTheme(
+          filled: true,
+          fillColor: Color(0xFFFFFCFA),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.all(Radius.circular(8)),
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(9)),
+            ),
+          ),
+        ),
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(10)),
           ),
         ),
       ),

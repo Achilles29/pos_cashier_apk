@@ -40,6 +40,10 @@ class LocalDatabase {
         "UPDATE local_printer SET scope_key = ? WHERE scope_key = 'default'",
         [target],
       );
+      await txn.rawUpdate(
+        "UPDATE local_print_outbox SET scope_key = ? WHERE scope_key = 'default'",
+        [target],
+      );
 
       final cacheRows = await txn.query(
         'master_cache',
@@ -80,7 +84,7 @@ class LocalDatabase {
     final path = p.join(await getDatabasesPath(), 'pos_cashier_local.db');
     final opened = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE app_meta (
@@ -149,6 +153,19 @@ class LocalDatabase {
             PRIMARY KEY (scope_key, server_printer_id)
           )
         ''');
+        await db.execute('''
+          CREATE TABLE local_print_outbox (
+            scope_key TEXT NOT NULL,
+            server_order_id INTEGER NOT NULL,
+            document_type TEXT NOT NULL DEFAULT 'ORDER_CONFIRM',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            retry_after TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (scope_key, server_order_id, document_type)
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -205,6 +222,21 @@ class LocalDatabase {
           await db.execute(
             'ALTER TABLE local_printer_scoped RENAME TO local_printer',
           );
+        }
+        if (oldVersion < 4) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS local_print_outbox (
+              scope_key TEXT NOT NULL,
+              server_order_id INTEGER NOT NULL,
+              document_type TEXT NOT NULL DEFAULT 'ORDER_CONFIRM',
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              retry_after TEXT,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (scope_key, server_order_id, document_type)
+            )
+          ''');
         }
       },
     );
@@ -426,7 +458,18 @@ class LocalDatabase {
     final db = await database;
     final result = Sqflite.firstIntValue(
       await db.rawQuery(
-        "SELECT COUNT(*) FROM sync_outbox WHERE scope_key = ? AND status IN ('PENDING', 'FAILED')",
+        "SELECT COUNT(*) FROM sync_outbox WHERE scope_key = ? AND status IN ('PENDING', 'FAILED', 'BLOCKED')",
+        [_scopeKey],
+      ),
+    );
+    return result ?? 0;
+  }
+
+  Future<int> blockedOutboxCount() async {
+    final db = await database;
+    final result = Sqflite.firstIntValue(
+      await db.rawQuery(
+        "SELECT COUNT(*) FROM sync_outbox WHERE scope_key = ? AND status = 'BLOCKED'",
         [_scopeKey],
       ),
     );
@@ -457,6 +500,7 @@ class LocalDatabase {
       );
       if (aggregateUuid.isNotEmpty) {
         final serverStatus = response['status']?.toString() ?? '';
+        final serverOrderId = _databaseInt(response['server_id']);
         final localStatus =
             serverStatus == 'SERVER_CONFIRMED' ? 'CONFIRMED' : 'DRAFT';
         final existingRows = await txn.query(
@@ -497,6 +541,18 @@ class LocalDatabase {
           where: 'scope_key = ? AND local_uuid = ?',
           whereArgs: [_scopeKey, aggregateUuid],
         );
+        if (serverStatus == 'SERVER_CONFIRMED' && serverOrderId > 0) {
+          await txn.insert('local_print_outbox', {
+            'scope_key': _scopeKey,
+            'server_order_id': serverOrderId,
+            'document_type': 'ORDER_CONFIRM',
+            'attempt_count': 0,
+            'retry_after': null,
+            'last_error': null,
+            'created_at': now,
+            'updated_at': now,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
       }
     });
   }
@@ -592,6 +648,68 @@ class LocalDatabase {
       'local_printer',
       where: 'scope_key = ? AND server_printer_id = ?',
       whereArgs: [_scopeKey, serverPrinterId],
+    );
+  }
+
+  Future<List<int>> pendingConfirmationPrintOrders({int limit = 10}) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    final rows = await db.query(
+      'local_print_outbox',
+      columns: ['server_order_id'],
+      where:
+          "scope_key = ? AND document_type = 'ORDER_CONFIRM' AND (retry_after IS NULL OR retry_after <= ?)",
+      whereArgs: [_scopeKey, now],
+      orderBy: 'created_at ASC',
+      limit: limit,
+    );
+    return rows
+        .map((row) => _databaseInt(row['server_order_id']))
+        .where((orderId) => orderId > 0)
+        .toList();
+  }
+
+  Future<void> markConfirmationPrintComplete(int serverOrderId) async {
+    if (serverOrderId <= 0) return;
+    final db = await database;
+    await db.delete(
+      'local_print_outbox',
+      where:
+          "scope_key = ? AND server_order_id = ? AND document_type = 'ORDER_CONFIRM'",
+      whereArgs: [_scopeKey, serverOrderId],
+    );
+  }
+
+  Future<void> postponeConfirmationPrint(
+    int serverOrderId,
+    String message,
+  ) async {
+    if (serverOrderId <= 0) return;
+    final db = await database;
+    final existing = await db.query(
+      'local_print_outbox',
+      columns: ['attempt_count'],
+      where:
+          "scope_key = ? AND server_order_id = ? AND document_type = 'ORDER_CONFIRM'",
+      whereArgs: [_scopeKey, serverOrderId],
+      limit: 1,
+    );
+    if (existing.isEmpty) return;
+    final previous = _databaseInt(existing.first['attempt_count']);
+    final exponent = previous.clamp(0, 4).toInt();
+    final delayMinutes = (1 << exponent).clamp(1, 15).toInt();
+    final now = DateTime.now();
+    await db.update(
+      'local_print_outbox',
+      {
+        'attempt_count': previous + 1,
+        'last_error': message,
+        'retry_after': now.add(Duration(minutes: delayMinutes)).toIso8601String(),
+        'updated_at': now.toIso8601String(),
+      },
+      where:
+          "scope_key = ? AND server_order_id = ? AND document_type = 'ORDER_CONFIRM'",
+      whereArgs: [_scopeKey, serverOrderId],
     );
   }
 
