@@ -266,7 +266,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                       SelectableText(previewLines),
                     ],
                   ),
-                ],
+                ),
               ),
               actions: [
                 TextButton(
@@ -578,7 +578,7 @@ class _PrinterBindingDialogState extends State<_PrinterBindingDialog> {
                     onPressed: _choose,
                     icon: const Icon(Icons.bluetooth_searching),
                   ),
-                ),
+                ],
               ),
               const SizedBox(height: 14),
               DropdownButtonFormField<int>(
