@@ -266,7 +266,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                       SelectableText(previewLines),
                     ],
                   ),
-                ),
+                ],
               ),
               actions: [
                 TextButton(
