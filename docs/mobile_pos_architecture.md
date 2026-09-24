@@ -1,5 +1,16 @@
 # Arsitektur Mobile POS APK
 
+> **Catatan audit 2026-09-24:** dokumen ini referensi arsitektur historis.
+> Kontrak aktif ada di [Kontrak APK–Finance–Control](2026-09-24_kontrak_apk_finance_control.md),
+> urutan kerja di [rolling plan](2026-09-24_rolling_plan_apk_finance_control.md).
+> `since` belum membuktikan delta lengkap; bootstrap sekarang masih terbatas.
+> `orders/status` di rancangan lama belum ada dalam route. Versi 3 adalah kontrak
+> sensitive action saja, bukan kontrak API/lisensi perangkat secara keseluruhan.
+> Perilaku yang tertulis di bawah harus dibedakan antara target dan implementasi.
+> **Revisi 25/09:** target offline bukan hanya antrean draft. Ledger transaksi,
+> stok/kas lokal, pembayaran tunai, struk dan handover wajib dikembangkan sesuai
+> kontrak aktif; pernyataan server-only di arsip ini menjelaskan baseline lama.
+
 Dokumen ini menjembatani APK Flutter dengan backend CodeIgniter 3 `finance`.
 
 ## File finance yang sudah dipetakan

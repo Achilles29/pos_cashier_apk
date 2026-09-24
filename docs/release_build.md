@@ -1,5 +1,12 @@
 # Rilis APK POS Kasir
 
+> **Gate tambahan 2026-09-24:** ikuti APK-12 pada
+> [rolling plan aktif](2026-09-24_rolling_plan_apk_finance_control.md) dan
+> [UAT lokal](2026-09-24_uat_apk_dan_eksekusi_lokal.md).
+> Lisensi per perangkat belum tersedia pada baseline ini; build signed saja
+> tidak berarti siap dijual. Flutter/build/perangkat belum diuji ulang di server
+> audit. Jangan mengganti identitas signing atau membersihkan data untuk update.
+
 Dokumen ini untuk membuat APK atau AAB yang dapat dipasang sebagai build
 operasional. Build release sengaja berhenti bila keystore belum ada; jangan
 pernah membagikan keystore atau password lewat Git, chat, atau screenshot.
@@ -33,9 +40,11 @@ flutter build apk --release
 flutter build appbundle --release
 ```
 
-Jika source baru dipindah ke komputer lain dan folder `android/gradlew` atau
+Jika source baru dipindah ke komputer lain dan file `android/gradlew` atau
 `android/gradle/wrapper/gradle-wrapper.jar` belum ada, pulihkan file generated
-tersebut lebih dahulu memakai Flutter SDK:
+di salinan kerja/temporary project terlebih dahulu memakai Flutter SDK.
+Jangan menjalankan regenerasi langsung di atas perubahan Android custom tanpa
+snapshot dan review diff. Contoh berikut hanya untuk salinan tersebut:
 
 ```text
 flutter create --platforms=android .

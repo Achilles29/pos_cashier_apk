@@ -1,5 +1,16 @@
 # POS Mobile - Kepemilikan Data dan Kontrak Sinkronisasi
 
+> **Pembaruan 2026-09-24:** prinsip server-authoritative tetap berlaku.
+> Detail perbaikan mengikuti [kontrak aktif](2026-09-24_kontrak_apk_finance_control.md)
+> dan [rolling plan](2026-09-24_rolling_plan_apk_finance_control.md).
+> Source saat ini masih memakai scope berbasis URL dan singleton mutable;
+> isolasi actor/pekerjaan async belum terbukti. ID payment hanya stabil selama
+> dialog hidup, belum melewati restart. Pernyataan retry/isolasi di bawah adalah
+> kontrak yang harus ditegakkan, bukan jaminan semua failure mode sudah lulus.
+> **Revisi kebutuhan 25/09:** target kini mencakup payment, stock/cash ledger dan
+> jurnal POS lokal saat server mati. Batas server-only dalam arsip ini bukan lagi
+> target offline; ikuti bagian 4 kontrak aktif untuk konsolidasi server dan custody.
+
 Tanggal: 2026-08-21
 
 Dokumen ini menjawab dua pertanyaan operasional: data mana yang menjadi milik

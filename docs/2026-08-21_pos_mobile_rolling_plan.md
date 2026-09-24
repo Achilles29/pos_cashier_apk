@@ -1,13 +1,19 @@
 # POS Mobile APK - Peta Fitur dan Rolling Plan
 
+> **ARSIP sejak 2026-09-24.** Pegangan aktif pindah ke
+> [Rolling plan APK–Finance–Control](2026-09-24_rolling_plan_apk_finance_control.md).
+> Checklist berikut adalah riwayat versi lama, bukan bukti HEAD saat ini lulus.
+> Baseline baru adalah `finance`, bukan `finance2`. Konsep license observe-only
+> di bawah tidak berlaku untuk rilis customer. Lihat kontrak dan UAT pada plan aktif.
+
 Tanggal audit awal: 2026-08-21  
 Pembaruan komersialisasi dan alignment: 2026-09-03  
 Scope: aplikasi kasir Android di `pos/pos_cashier_apk` yang memakai Finance2 sebagai server/dashboard testing utama.
 
-Mulai pembaruan ini, `finance2` adalah baseline backend untuk pengembangan APK.
-Referensi `finance` lama di bagian historis hanya dipertahankan sebagai catatan
-asal pekerjaan. Endpoint, tabel, permission, printer, dan status baru harus
-divalidasi terhadap `finance2` sebelum dipakai APK.
+Pada pembaruan historis 2026-09-03, `finance2` digunakan sebagai baseline backend untuk pengembangan APK.
+Referensi `finance` dan `finance2` di bagian berikut dipertahankan sebagai
+catatan asal pekerjaan, bukan pilihan backend untuk pekerjaan baru.
+Gunakan baseline pada rolling plan aktif 2026-09-24.
 
 ## 1. Keputusan Arsitektur
 
@@ -883,7 +889,7 @@ yang bukan bagian dari perubahan ini.
 7. R8: offline two-way sync dan background reliability.
 8. R9: audit, release, dan pilot outlet.
 
-Dokumen ini menjadi baseline rolling plan. Status `[x]`, `[~]`, dan `[ ]` diperbarui setiap iterasi sebelum fitur baru ditambahkan.
+Dokumen ini dipertahankan sebagai baseline historis. Perbarui status dan checklist pekerjaan baru hanya pada rolling plan aktif 2026-09-24, bukan checklist arsip ini.
 
 ## 9. Referensi Kode
 
